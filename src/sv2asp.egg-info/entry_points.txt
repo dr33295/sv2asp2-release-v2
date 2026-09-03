@@ -1,3 +1,0 @@
-[console_scripts]
-sv2asp = sv2asp.cli:main
-sv2asp2 = sv2asp.aspfirst2.__main__:main

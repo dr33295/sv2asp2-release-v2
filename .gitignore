@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 sv2asp.toml
+*.egg-info/
