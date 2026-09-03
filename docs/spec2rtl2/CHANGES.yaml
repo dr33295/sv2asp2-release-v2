@@ -699,3 +699,14 @@
   fix: "roundtrip.py: SIMULATORS order, sim_available/resolve_sim, _verilator_runs + _parse_out + the fill merge, the report names the rule; __main__ --verilator/--sim and the doctor's arbiter row; flow.py `simulator`; setup.sh"
   gate: [test_v2_simulator_order_is_verilator_first, test_v2_round_trip_under_verilator_two_fill_rule, test_v2_round_trip_probe_agrees_under_icarus_too, test_v2_fifo_round_trips_under_verilator, test_v2_manifest_accepts_simulator_key]
   docs: [ROUTE_METHODOLOGY 27.5, SUITE A.10/B.1/C.1, TOOL.md, GETTING_STARTED, AUTOMATION, skills release-v2 + spec2rtl-dsl]
+
+- id: release-pull
+  date: 2026-09-03
+  status: fixed
+  found: "user question: what about pull -- each release had been an orphan commit force-pushed over the public main, so an existing clone could not `git pull`"
+  what: "releases are published as one new commit on top of the previous one (scripts/publish_release_v2.sh: build, sync over the release folder, refuse a private pointer, commit, push both remotes without force), so `git pull` fast-forwards"
+  why: a public repository whose history is rewritten every release cannot be updated in place; a linear line of bundle snapshots carries none of the private history and updates with one command
+  fix: scripts/publish_release_v2.sh; the maintainer note records the procedure and the recipient's update command
+  gate: [test_v2_release_publish_is_linear]
+  docs: [notes/MAINTAINER.md]
+
