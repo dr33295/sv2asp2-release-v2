@@ -1,0 +1,108 @@
+# ==============================================================================
+# fifo -- the v2 FIFO's SIGNATURE. The English in force is SPECIFICATION.md; the
+# checkable specification is fifo.spec; the contract those two compile to is
+# spec.lp, which for now is hand-written (see the entry's note).
+#
+# This block is the second written in the specification language, and it exists
+# partly to test the language on something that is NOT the miss queue: a block
+# with no objects, no CAM, and pointers where the queue has slots.
+# ==============================================================================
+
+metadata:
+  block_name: "fifo"
+  version: "1.0.0"
+  status: "Built and certified"
+  description: "A synchronous FIFO with wrap-bit pointers"
+
+parameters:
+  - name: "depth"
+    type: "integer"
+    default: 4
+    description: "Entries the FIFO holds"
+  - name: "width"
+    type: "integer"
+    default: 8
+    description: "Width of a stored word"
+
+clocks_and_resets:
+  - name: "clk"
+    type: "clock"
+    edge: "posedge"
+    description: "Primary system clock"
+  - name: "reset_n"
+    type: "reset"
+    polarity: "active_low"
+    discipline: "once"
+    description: "System reset"
+
+interfaces:
+  - name: "push"
+    protocol: "readyValid"
+    side: "receives"
+    description: "A word offered for storage; `full` is the refusal"
+  - name: "pop"
+    protocol: "readyValid"
+    side: "receives"
+    description: "A request to take a word out; `empty` is the refusal"
+
+ports:
+  - name: "push"
+    direction: "input"
+    width: 1
+    clock: "clk"
+    interface: "push"
+    role: "valid"
+    description: "A word is offered"
+  - name: "full"
+    direction: "output"
+    width: 1
+    clock: "clk"
+    interface: "push"
+    role: "ready"
+    active: "low"
+    description: >
+      INVERTED READY. The FIFO can take a word exactly when `full` is low, so this
+      port is the push interface's ready wire with the opposite polarity. It is
+      declared here rather than left to the reader because the specification's
+      `push.ready` reads through it, and an integrator wiring `full` to a ready
+      input would get the refusals exactly backwards.
+  - name: "data_push"
+    direction: "input"
+    width: "width"
+    clock: "clk"
+    interface: "push"
+    role: "opaque"
+    description: "The word offered"
+  - name: "pop"
+    direction: "input"
+    width: 1
+    clock: "clk"
+    interface: "pop"
+    role: "valid"
+    description: "A word is requested"
+  - name: "empty"
+    direction: "output"
+    width: 1
+    clock: "clk"
+    interface: "pop"
+    role: "ready"
+    active: "low"
+    description: "INVERTED READY, as `full` is for push: a word can be taken exactly when low"
+  - name: "data_pop"
+    direction: "output"
+    width: "width"
+    clock: "clk"
+    interface: "pop"
+    role: "opaque"
+    description: "The word taken out"
+  - name: "valid_pop"
+    direction: "output"
+    width: 1
+    clock: "clk"
+    interface: "-"
+    role: "level"
+    description: "The word on data_pop is real -- exactly the complement of empty"
+
+registers: []
+
+functional_description: "See SPECIFICATION.md -- the English specification in force."

@@ -1,0 +1,243 @@
+# DESUGARED from the controlled-English surface by dsl/cnl.py -- the symbolic
+# core, dumpable and diffable. Edit the .cnl, never this.
+
+disable iff (!resetN)
+
+@assume fillsAnswerFetches
+  fill.arrives(F)
+  |-> some entry X1 where inFlight(X1) && X1.address == F.address
+
+@assume memoryEventuallyAnswers
+  each entry E ( inFlight(E) |-> s_eventually(fill.arrives(F) && F.address == E.address) )
+
+@assume requestHeldUntilTaken
+  request.valid(R) && !accepted(R)
+  |=> request.valid(R) && $stable(R)
+
+@define joinable(E)
+  holds when wantsFetch(E) || inFlight(E)
+
+@define repeatDemand(R)
+  holds when R.isDemand == 1 && some entry X1 where joinable(X1) && demanding(X1) && X1.address == R.address
+
+@state liveEntries : counter(0..depth)
+
+@define roomForDemand
+  holds when liveEntries < depth
+
+@define roomForPrefetch
+  holds when liveEntries < depth - demandReserve
+
+@state inFlightCount : counter(0..depth)
+
+@define fetchLimitAllows
+  holds when inFlightCount < maxOutstandingFetches
+
+@define eligible(E)
+  holds when wantsFetch(E) && (demanding(E) || !some entry X1 where demanding(X1) && wantsFetch(X1))
+
+@behavior allocateDemand
+  request.valid(R) && R.isDemand == 1 && roomForDemand && !some entry X1 where joinable(X1) && X1.address == R.address
+  -> accept R
+     create entry E: E.address = R.address, E.tag = R.tag
+     ##1 demanding(E) && wantsFetch(E)
+
+@behavior allocatePrefetch
+  request.valid(R) && R.isDemand == 0 && roomForPrefetch && !some entry X1 where joinable(X1) && X1.address == R.address
+  -> accept R
+     create entry E: E.address = R.address
+     ##1 wantsFetch(E)
+
+@behavior liftPrefetchToDemand
+  each entry E where joinable(E) && !demanding(E) (
+    request.valid(R) && R.isDemand == 1 && E.address == R.address
+    -> accept R
+     ##1 demanding(E)
+     ##1 E.tag = R.tag
+  )
+
+@behavior mergePrefetch
+  request.valid(R) && R.isDemand == 0 && some entry X1 where joinable(X1) && X1.address == R.address
+  -> accept R
+
+@behavior stallRepeatDemand
+  request.valid(R) && repeatDemand(R)
+  -> hold fetchStall high
+     refuse R
+
+@behavior requestReadyDemand
+  request.valid(R) && R.isDemand == 1 && (!repeatDemand(R) && (some entry X1 where joinable(X1) && X1.address == R.address || roomForDemand))
+  -> ready on request
+
+@property requestReadyDemandOnly
+  request.valid(R) && R.isDemand == 1 && request.ready
+  |-> !repeatDemand(R) && (some entry X1 where joinable(X1) && X1.address == R.address || roomForDemand)
+
+@behavior requestReadyPrefetch
+  request.valid(R) && R.isDemand == 0 && ((some entry X2 where joinable(X2) && X2.address == R.address || roomForPrefetch))
+  -> ready on request
+
+@property requestReadyPrefetchOnly
+  request.valid(R) && R.isDemand == 0 && request.ready
+  |-> (some entry X2 where joinable(X2) && X2.address == R.address || roomForPrefetch)
+
+@behavior askMemory
+  # choose fairly among eligible entries: THE FAIRNESS OBLIGATION,
+  # named where it arises (Chapter 35.5). Checking is Phase 3;
+  # the per-object bound rests on it (Chapter 34).
+  some entry E where eligible(E) (
+    fetchLimitAllows
+    -> drive memoryRequest with E.address
+  )
+
+@behavior enquiryTaken
+  memoryRequest.taken(A)
+  -> each entry E where wantsFetch(E) && E.address == A:
+       ##1 !wantsFetch(E) && inFlight(E)
+
+@behavior receiveFill
+  fill.arrives(F)
+  -> each entry E where inFlight(E) && E.address == F.address:
+       ##1 filled(E) && !inFlight(E) && lineData(E) = F.data
+
+@behavior forwardDemand
+  # choose fairly among filled demanding entries: THE FAIRNESS OBLIGATION,
+  # named where it arises (Chapter 35.5). Checking is Phase 3;
+  # the per-object bound rests on it (Chapter 34).
+  some entry X1 where filled(X1) && demanding(X1)
+  -> exactly(1,
+       some entry E where filled(E) && demanding(E) (
+         send on forward answering E with tag = E.tag, data = lineData(E)
+         ##1 end E
+       ))
+
+@behavior finishPrefetch
+  each entry E where filled(E) && !demanding(E) (
+    exists(E)
+    -> ##1 end E
+  )
+
+@behavior redirect
+  redirect.arrives
+  -> each entry X1 where demanding(X1): ##1 !demanding(X1)
+
+@property demandForwardedAfterFill
+  each entry E (
+    exists(E) && filled(E) && demanding(E)
+    |-> ##[1:depth] ( (exists(E) && forwarded(E)) || !demanding(E) || !exists(E) )
+  )
+
+@property entryPhasesDoNotOverlap
+  each entry E (
+    exists(E)
+    |-> !(wantsFetch(E) && inFlight(E)) && !(wantsFetch(E) && filled(E)) && !(inFlight(E) && filled(E))
+  )
+
+@property fetchDoesNotRestart
+  each entry E (
+    exists(E) && !wantsFetch(E)
+    |=> !exists(E) || !wantsFetch(E)
+  )
+
+@property forwardedEntryIsFreed
+  forward.valid(D)
+  |-> each entry E where corresponds(D, E): ##1 !exists(E)
+
+@property forwardIsReal
+  forward.valid(D)
+  |-> exactly(1, some entry E where corresponds(D, E) && filled(E) && demanding(E))
+
+@property forwardIsCorrect
+  forward.valid(D)
+  |-> each entry E where corresponds(D, E): D.tag == E.tag && D.data == lineData(E)
+
+@property oneEntryPerLine
+  each entry E, each entry P (
+    E != P && joinable(E) && joinable(P) |-> E.address != P.address
+  )
+
+@property fetchIsReal
+  memoryRequest.taken(A)
+  |-> some entry X1 where wantsFetch(X1) && X1.address == A
+
+@property demandFirst
+  memoryRequest.valid(A) && some entry U where demanding(U) && wantsFetch(U)
+  |-> some entry E where E.address == A && demanding(E)
+
+@property fetchLimitHeld
+  always inFlightCount <= maxOutstandingFetches
+
+@property neverOverfilled
+  always liveEntries <= depth
+
+@property demandAlwaysHasRoom
+  request.valid(R) && R.isDemand == 1 && !repeatDemand(R) && liveEntries <= depth - demandReserve
+  |-> request.ready
+
+@property prefetchIsNeverForwarded
+  forward.valid(D)
+  |-> each entry E where corresponds(D, E): demanding(E)
+
+@property quietUnderReset
+  enable iff (!resetN)
+  always !memoryRequest.valid && !forward.valid && !fetchStall.high
+
+@property emptyUnderReset
+  enable iff (!resetN)
+  always liveEntries == 0 && inFlightCount == 0
+
+@scenario demandLiftsAPrefetch
+  some entry E where joinable(E) && !demanding(E) (
+    request.valid(R) && R.isDemand == 1 && R.address == E.address
+    |=> exists(E) && demanding(E) && E.tag == R.tag
+  )
+
+@scenario prefetchMergesIntoDemand
+  some entry E where joinable(E) && demanding(E) (
+    !redirect.arrives && request.valid(R) && R.isDemand == 0 && R.address == E.address
+    |=> exists(E) && demanding(E)
+  )
+
+@scenario demandBeatsPrefetch
+  some entry P, some entry D where !demanding(P) && wantsFetch(P) && demanding(D) && wantsFetch(D) (
+    fetchLimitAllows
+    |-> memoryRequest.valid(D.address)
+  )
+
+@scenario prefetchRefusedAtReserve
+  liveEntries == depth - demandReserve && request.valid(R) && R.isDemand == 0 && !some entry X1 where joinable(X1) && X1.address == R.address
+    |-> !accepted(R)
+
+@scenario repeatDemandStalls
+  request.valid(R) && R.isDemand == 1 && some entry X1 where joinable(X1) && demanding(X1) && X1.address == R.address
+    |-> fetchStall.high
+
+# ---- implicit vocabulary: windows the surface's sentences imply,
+# ---- declared here so the design must mount them
+@define corresponds(E, D)
+  kind: condition
+  meaning: entry-state vocabulary, implicit in the surface
+
+@define demanding(E)
+  kind: condition
+  meaning: entry-state vocabulary, implicit in the surface
+
+@define filled(E)
+  kind: condition
+  meaning: entry-state vocabulary, implicit in the surface
+
+@define forwarded(E)
+  kind: condition
+  meaning: entry-state vocabulary, implicit in the surface
+
+@define inFlight(E)
+  kind: condition
+  meaning: entry-state vocabulary, implicit in the surface
+
+@define lineData(E)
+  kind: condition
+  meaning: entry-state vocabulary, implicit in the surface
+
+@define wantsFetch(E)
+  kind: condition
+  meaning: entry-state vocabulary, implicit in the surface

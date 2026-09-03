@@ -1,0 +1,369 @@
+# The specification language's grammar -- THE SINGLE SOURCE, in EBNF.
+#
+# Three consumers, all mechanical. The methodology's grammar chapter renders this file
+# verbatim (drift-gated). The PARSER is built by lark -- a publicly available parser
+# generator -- from a translation of this file that `dsl/ebnf.py` performs at import, so
+# the parser can no more drift from this grammar than the document can. And the gate builds
+# a fresh parser from the translation on every run.
+#
+# Notation: `::=` defines, `|` alternates, `{ X }` repeats, `[ X ]` is optional, "..."
+# quotes a literal, UPPERCASE names are terminals (defined at the bottom), lowercase names
+# are productions. Lines beginning with # are commentary.
+#
+# Two decisions live in this grammar because parsing found them, not taste:
+#
+#   * A QUANTIFIER IS THE FINAL CONJUNCT, and its `where` reaches maximally right -- to a
+#     closing parenthesis, a colon, or the end. That is how every specification reads
+#     ("...and no entry holds this line"), and stating it is what makes the parse
+#     deterministic: allowed mid-conjunction, a general parser finds a second tree that
+#     splits the where-clause at the first `&&`. A quantifier is also never called,
+#     indexed, or fielded, so it is not a postfix base.
+#
+#   * KEYWORDS ARE CARVED OUT OF KIND by lookahead, so `some entry E` can never lex as
+#     three adjacent names.
+
+# ==== surface: the controlled-English sentence patterns ==================================
+#
+# THE SURFACE'S HALF OF THE SINGLE SOURCE (2026-08-31, the user: "We need to keep a single
+# grammar source"). The condition patterns below are LIVE: dsl/cnl.py compiles each
+# production to the matcher it uses, in THIS order (first match wins -- the priority that
+# was buried in code order is now visible here). The methodology's Chapter 35 renders this
+# section verbatim, drift-gated. Handlers -- what each pattern MEANS in the core -- live in
+# dsl/cnl.py keyed by production name; a production with no handler, or a handler with no
+# production, refuses to import.
+#
+# Notation, beyond the core section's: `~` glues two tokens with NO space between them
+# (an adjective run absorbs its own trailing space). Literals are spelled as WRITTEN,
+# sigils and all; the compiler strips the sigil when building the matcher, because
+# matching happens after the desugarer strips them from the text.
+#
+# Each pattern carries executable examples: `ex:` lines are run by the gate against the
+# derived matcher and must reproduce exactly -- an example is the pattern's witness, and a
+# pattern with no example is a build error (the discriminating-rows lesson).
+# `ex(entity=V):` supplies the anaphor context (`it`, bare `is ...`).
+#
+# A pattern tagged [block-vocabulary] encodes one block's words (demand/prefetch classes,
+# repeatDemand, the fill witness) -- honest single-sourcing of what is TODAY corpus-shaped,
+# owed a declaration mechanism before a second block needs different words.
+
+# -- the keyword vocabulary (Chapter 35's sigil rule reads these two lists)
+SKEYWORDS ::= "@when" | "@then" | "@given" | "@while" | "@once" | "@must" | "@never"
+            | "@may" | "@within" | "@next" | "@every" | "@exactly" | "@still"
+            | "@choose" | "@before" | "@during" | "@eventually" | "@always"
+GKEYWORDS ::= "and" | "or" | "either" | "but" | "not" | "cycle" | "cycles" | "no" | "the"
+            | "a" | "an" | "one" | "more" | "such" | "fairly" | "among" | "arrives"
+            | "exists" | "exist" | "accepted" | "accept" | "refuse" | "create" | "end"
+            | "drive" | "send" | "answering" | "answers" | "with" | "for" | "has" | "is"
+            | "are" | "becomes" | "stops" | "remembers" | "as" | "its" | "reset"
+            | "equals" | "equal" | "exceed" | "belong" | "presented" | "taken" | "valid"
+            | "ready" | "high" | "low" | "keep" | "existing" | "gone"
+
+# -- surface terminals (a terminal reference captures; inline quoted words do not)
+SVAR    ::= /[A-Z]\w*/
+SIFACE  ::= /[a-z]\w*/
+SW      ::= /\w+/
+SADJ    ::= /[\w -]*?/
+STOK    ::= /\S+/
+SNUM    ::= /\d+/
+SREST   ::= /.*/
+SADJW   ::= /[\w-]+/
+SCLASS  ::= "demand" | "prefetch"
+SVARFIELD ::= /([A-Z]\w*)\.(\w+)/
+SEXPRTOK  ::= /\w+\(?[^ ]*\)?/
+SCMP      ::= /.*(?:==|!=|<=|>=|<|>).*/
+SBARE     ::= /[a-z]\w*/
+
+# -- the condition patterns, in match order (first match wins)
+
+condValidClassRequestIsRepeat ::= [ ("a"|"an") ] "valid" SCLASS "request" SVAR "is" [ "a" ] "repeatDemand"
+#   [block-vocabulary] the request is a repeat of an already-demanded line
+#   ex: "a valid demand request R is a repeatDemand" => request.valid(R) && repeatDemand(R)
+
+condValidClassRequestArrives ::= [ ("a"|"an") ] "valid" SCLASS "request" SVAR "arrives"
+#   [block-vocabulary] the request interface's valid role plus the class field
+#   ex: "a valid prefetch request R arrives" => request.valid(R) && R.isDemand == 0
+
+condClassArrives ::= [ ("a"|"an") ] SCLASS SVAR [ "for" STOK ] "arrives"
+#   [block-vocabulary] a classed request, optionally pinned to an address
+#   ex: "a demand R for E.address arrives" => request.valid(R) && R.isDemand == 1 && R.address == E.address
+#   ex: "a prefetch R arrives" => request.valid(R) && R.isDemand == 0
+
+condNonRepeatDemandValid ::= [ ("a"|"an") ] "non-repeat" "demand" SVAR "is" "valid"
+#   [block-vocabulary]
+#   ex: "a non-repeat demand R is valid" => request.valid(R) && R.isDemand == 1 && !repeatDemand(R)
+
+condIfaceValidNotAccepted ::= SIFACE SVAR "is" "valid" "but" "not" "accepted"
+#   valid held while the ready side refuses -- any readyValid interface
+#   ex: "request R is valid but not accepted" => request.valid(R) && !accepted(R)
+
+condStillValidUnchanged ::= SVAR "@must" "@still" "be" "valid" "and" "unchanged"
+#   [block-vocabulary] persistence of the request payload (the interface word is implicit)
+#   ex: "R @must @still be valid and unchanged" => request.valid(R) && $stable(R)
+
+condIfaceVarArrives ::= SIFACE SVAR "arrives"
+#   an interface presents a payload -- generalized from the hardcoded `fill`
+#   ex: "fill F arrives" => fill.arrives(F)
+
+condIfaceArrives ::= SIFACE "arrives"
+#   a payloadless interface fires -- generalized from the hardcoded `redirect`
+#   ex: "redirect arrives" => redirect.arrives
+
+condNoIface ::= "no" SIFACE
+#   the interface does not fire this instant
+#   ex: "no redirect" => !redirect.arrives
+
+condIfaceTaken ::= [ ("a"|"an") ] SIFACE "for" "address" SVAR "is" "taken"
+#   the handshake completes -- generalized from the hardcoded `memoryRequest`
+#   ex: "a memoryRequest for address A is taken" => memoryRequest.taken(A)
+
+condFillEventually ::= [ ("a"|"an") ] SIFACE "for" STOK "@must" "@eventually" "arrive"
+#   [block-vocabulary] the obligation form; the witness variable F and the address field
+#   are this block's words
+#   ex: "a fill for E.address @must @eventually arrive" => s_eventually(fill.arrives(F) && F.address == E.address)
+
+condEntryWithAddressExists ::= [ ("a"|"an") ] SADJ ~ "entry" "with" "address" STOK "@must" "exist"
+#   a witness entry, adjectives narrowing the population
+#   ex: "an inFlight entry with address F.address @must exist" => some entry X1 where inFlight(X1) && X1.address == F.address
+
+condEntryThatVerbExists ::= [ ("a"|"an") ] "entry" "that" SW "for" STOK "@must" "exist"
+#   ex: "an entry that wantsFetch for A @must exist" => some entry X1 where wantsFetch(X1) && X1.address == A
+
+condNoEntryHas ::= "no" SADJ ~ "entry" "has" STOK
+#   ex: "no live entry has R.address" => !some entry X1 where exists(X1) && X1.address == R.address
+
+condNoEntryVerb ::= "no" SADJ ~ "entry" SW
+#   ex: "no live entry wantsFetch" => !some entry X1 where exists(X1) && wantsFetch(X1)
+
+condEntryHas ::= [ ("a"|"an") ] SADJ ~ "entry" "has" STOK
+#   ex: "a joinable entry has R.address" => some entry X1 where joinable(X1) && X1.address == R.address
+
+condOneOrMoreExist ::= "one" "or" "more" SADJ ~ ( "entry" | "entries" ) "exist"
+#   ex: "one or more filled demanding entries exist" => some entry X1 where filled(X1) && demanding(X1)
+
+condIsDemand ::= SVAR "is" [ "a" ] "demand"
+#   [block-vocabulary]
+#   ex: "R is a demand" => R.isDemand == 1
+
+condIsPrefetch ::= SVAR "is" [ "a" ] "prefetch"
+#   [block-vocabulary]
+#   ex: "R is a prefetch" => R.isDemand == 0
+
+condIsRepeat ::= SVAR "is" [ "a" ] "repeatDemand"
+#   [block-vocabulary]
+#   ex: "R is a repeatDemand" => repeatDemand(R)
+
+condIsNotRepeat ::= SVAR "is" "not" "a" "repeatDemand"
+#   [block-vocabulary]
+#   ex: "R is not a repeatDemand" => !repeatDemand(R)
+
+condExists ::= SVAR [ "@still" ] "exists"
+#   ex: "E @still exists" => exists(E)
+
+condIsNotAdj ::= SVAR "is" [ "@still" ] "not" SADJW
+#   ex: "E is not demanding" => !demanding(E)
+
+condIsAdj ::= SVAR "is" [ "@still" ] SADJW
+#   `non-` negates, per the adjective rules
+#   ex: "E is inFlight" => inFlight(E)
+#   ex: "E is non-demanding" => !demanding(E)
+
+condBareIsAdj ::= "is" SADJW
+#   anaphoric: the current entity
+#   ex(entity=E): "is filled" => filled(E)
+
+condVarVerb ::= ( "it" | SVAR ) SW
+#   ex(entity=E): "it wantsFetch" => wantsFetch(E)
+#   ex: "E wantsFetch" => wantsFetch(E)
+
+condWhile ::= "@while" SREST
+#   ex: "@while E is inFlight" => inFlight(E)
+
+condMustBeGone ::= SVAR "@must" "be" "gone" [ "@next" "cycle" ]
+#   ex: "E @must be gone @next cycle" => !exists(E)
+
+condIfaceReady ::= SIFACE "@must" "be" "ready"
+#   generalized from the hardcoded `request`
+#   ex: "request @must be ready" => request.ready
+
+condIfaceHigh ::= SIFACE "is" "high"
+#   generalized from the hardcoded `fetchStall`
+#   ex: "fetchStall is high" => fetchStall.high
+
+condIfaceMustNotValid ::= SIFACE "@must" "not" "be" "valid"
+#   generalized from the hardcoded (memoryRequest|forward)
+#   ex: "memoryRequest @must not be valid" => !memoryRequest.valid
+
+condIfaceLow ::= SIFACE "@must" "be" "low"
+#   generalized from the hardcoded `fetchStall`
+#   ex: "fetchStall @must be low" => !fetchStall.high
+
+condMustBeNum ::= SW "@must" "be" SNUM
+#   ex: "liveEntries @must be 0" => liveEntries == 0
+
+condFieldEquals ::= SVARFIELD [ "@must" ] ( "equals" | "equal" ) STOK
+#   ex: "D.tag @must equal E.tag" => D.tag == E.tag
+
+condExprEquals ::= SEXPRTOK [ "@must" ] ( "equals" | "equal" ) STOK
+#   ex: "E.lineData @must equal D.data" => lineData(E) == D.data
+
+condBareName ::= SBARE
+#   a nullary definition or counter
+#   ex: "fetchLimitAllows" => fetchLimitAllows
+
+condComparison ::= SCMP
+#   an already-symbolic comparison passes through
+#   ex: "inFlightCount <= maxOutstandingFetches" => inFlightCount <= maxOutstandingFetches
+
+# -- declaration shapes (commentary: implemented by dsl/cnl.py's declaration handlers, the
+# -- way the core's declaration shapes below are implemented by the structural pass; the
+# -- @property whole-sentence forms are [block-vocabulary] to a large degree and owed the
+# -- same generalization the conditions received)
+#
+#   block        ::= "@" KINDWORD NAME body-lines...
+#   defineShape  ::= VAR "is" [ "a" ] NAME "when" condition-lines
+#   assumeShape  ::= ( "for every entry" VAR | "@while" cond | "@when" cond ) then-line
+#   behaviorShape::= trigger-lines "then" effect-lines
+#                    ("is ready @exactly @when" is the biconditional shape)
+#
+#   THE EFFECT LINES, in the order they are tried. Note the asymmetry this file cannot
+#   hide: the CONDITION patterns below are the single source -- cnl.py compiles its
+#   matchers from them and a production without a handler is refused at import -- while
+#   these EFFECT shapes are documented here and dispatched in code. So this list is a
+#   description that can drift, and the gate does not catch it; extending the derivation
+#   to the effects is an open item (AUTOMATION, "the effect surface").
+#
+#     "accept" VAR                          the handshake takes it
+#     VAR "is not accepted"                 and refuses it
+#     "fetchStall is high"                  [block-vocabulary] a named port held high
+#     "keep the existing entry"             an explicit NO-OP: lowers to nothing, because
+#                                           the frame monitors are what make "and nothing
+#                                           else happened" true
+#     "end" VAR "@next cycle"               the object ceases to exist
+#     "create entry" VAR "for address" TOK [ "with tag" TOK ]
+#     "@next cycle" clause                  (see below)
+#     "choose one" ADJ "entry" VAR          a witness -- which one is the design's freedom
+#     "choose exactly one" [ "such" ] "entry" VAR
+#                                           ...with its own effect lines under it, each a
+#                                           "send forward" or an "end VAR @next cycle"
+#     "choose fairly among" REST            the fairness OBLIGATION, recorded (Phase 3)
+#     "drive" IFACE "with" TOK              the output command
+#     "@every" ADJ "entry stops being" ADJW "@next cycle"
+#                                           a per-object effect stated in one line
+#     "the" ADJ "entry" VAR "that" VERB "for" TOK   |   "the" ADJ "entry" VAR "with" TOK
+#                                           a SCOPED effect block: the description selects
+#                                           the object, the lines under it are its effects
+#
+#   and the "@next cycle" clause is one of
+#
+#     "end" VAR                             destruction
+#     VAR "." FIELD "is" TOK                capture into an object's field
+#     NAME [ "[" expr "]" ] ( "is" | "=" ) expr
+#                                           a declared @state assigned -- scalar or one
+#                                           POSITION of an indexed one, with an EXPRESSION
+#                                           on the right so a counter can advance.
+#                                           Recognised only when NAME is a declared @state,
+#                                           so an ordinary condition is still a condition
+#     any condition                         a flag set (or cleared, when negated)
+#   scenarioShape::= trigger-lines arrow expectation-lines
+#   quantBlock   ::= "@every" KIND VAR ":" ( claim-lines | trigger "then" effect-lines )
+#                    -- any domain declared @index, not only the built-in `entry`, and in a
+#                    @behavior as well as a @property: a per-position EFFECT ("for every
+#                    bit, hold it unless this is its turn") is as ordinary as a
+#                    per-position claim, and having only the second is half a construct
+#
+# Since 2026-09-02 the surface also carries, all of them things the first block never
+# needed and the second could not do without:
+#
+#   * `@state <name> : enum { a, b, c }` -- and a member is a VALUE, so a phase is
+#     compared by name rather than by a number nobody can read;
+#   * `@next cycle <state> is <value>` / `= <expression>` -- a scalar state assigned, and
+#     an expression on the right, so a counter can advance. THE TARGET is next cycle and
+#     every READ is at the event's instant, subscripts included;
+#   * `@index <name> : <extent>` as a declaration of this notation, not only of the core;
+#   * `<port>[J]` -- element J on a port that declares `elements`, bit J on a flat one,
+#     the DECLARATION deciding which and never inference;
+#   * `@then @next cycle <condition>` in a @property, which a @scenario already took --
+#     the same clause, and only the declaration keyword had differed. Every consequent of
+#     one claim or none: a claim is about one instant;
+#   * `@always <condition>` -- a property with no trigger, the eighteenth structural keyword.
+#     The core had `always <expr>` from the start; the surface reached it only inside an
+#     `@every ... :` block, so a top-level "the state is always one of these" needed a
+#     tautological @when. Explicit and sigiled, not "a bare condition means always";
+#   * a clause NAMING THE RESET is reset-exempt however it is spelled (Chapter 33), in a
+#     @behavior as well as a @property. Keying that to one phrase left the other spellings
+#     compiling into monitors that cannot fire.
+
+# ---- expressions: the sublanguage the parser is built from -------------------------------
+
+expr       ::= conj { "||" conj }
+conj       ::= candq | cmp { "&&" cmp } [ "&&" candq ]
+candq      ::= quantifier | notq
+notq       ::= "!" quantifier
+cmp        ::= arith [ CMPOP arith ]
+arith      ::= term { ADDOP term }
+term       ::= unary { MULOP unary }
+unary      ::= notx | delay | postfix
+notx       ::= "!" unary
+delay      ::= "##" INT unary | "##" "[" INT ":" bound "]" unary
+bound      ::= INT | KIND
+postfix    ::= primary { trailer }
+trailer    ::= fieldtr | calltr | indextr
+fieldtr    ::= "." KIND
+calltr     ::= "(" [ expr { "," expr } ] ")"
+indextr    ::= "[" expr "]"
+primary    ::= parenx | num | var | namek | named
+parenx     ::= "(" expr ")"
+num        ::= INT
+var        ::= VAR
+namek      ::= KIND
+named      ::= DNAME
+
+quantifier ::= QUANT KIND VAR [ wherep ] [ scopep ]
+wherep     ::= "where" expr
+scopep     ::= ":" expr
+
+# ---- terminals ---------------------------------------------------------------------------
+
+QUANT      ::= "some" | "each"
+CMPOP      ::= "==" | "!=" | "<=" | ">=" | "<" | ">"
+ADDOP      ::= "+" | "-"
+MULOP      ::= "*" | "\\"
+VAR        ::= /[A-Z]\w*/
+KIND       ::= /(?!(?:some|each|where)\b)[a-z_]\w*/
+DNAME      ::= /\$\w+/
+INT        ::= /\d+/
+
+# ---- declarations: the file-level shapes (the structural pass assembles these) -----------
+
+# declaration  ::= assume | indexDecl | stateDecl | define | behavior | property | scenario
+# indexDecl    ::= "@index" KIND ":" bound gloss
+# stateDecl    ::= "@state" KIND [ "[" KIND "]" ] ":" domain gloss
+# domain       ::= "flag" | "counter" "(" INT ".." INT ")" | "value" "(" bound ")"
+#                | "pointer" "(" bound ")" | "transaction" "of" KIND | "index" "of" KIND
+#                | "set" "of" KIND | "enum" "{" KIND { "," KIND } "}"
+# define       ::= "@define" KIND [ "(" VAR { "," VAR } ")" ] kindLine [ phrasing ] [ gloss ]
+#                  [ "holds when" expr ]
+# behavior     ::= "@behavior" KIND { binder } expr "->" construction { construction }
+# construction ::= [ delay ] ( command | stateUpdate | creation | destruction | scopedEff )
+# creation     ::= "create" KIND VAR [ ":" assignment { "," assignment } ]
+# destruction  ::= "end" VAR
+# command      ::= "accept" VAR | "refuse" VAR | "ready on" KIND
+#                | "drive" KIND "with" payload
+#                | "send on" KIND [ "as" VAR ] [ "answering" VAR ] "with" payload
+#                | "hold" KIND ( "high" | "low" )
+# payload      ::= expr | assignment { "," assignment }
+# stateUpdate  ::= expr | assignment      -- a flag SET by mentioning it and CLEARED by
+#                  negating it (`demanding(E)` / `!demanding(E)`), or a value assigned
+# scopedEff    ::= binder "(" construction { construction } ")"   -- the same effects, per
+#                  object or per position of a declared domain
+# assignment   ::= target "=" expr
+# target       ::= KIND [ "." KIND | "[" expr "]" ]
+#                  -- a window, one field of an object, or ONE POSITION of an indexed
+#                  window. The subscript is READ AT THE EVENT'S INSTANT even though the
+#                  target is written at the next: which position a write lands on is
+#                  decided by the index now, not by what the index will hold afterwards
+# property     ::= "@property" KIND [ "enable iff" "(" expr ")" ] ( claim | "always" expr )
+# assume       ::= "@assume" KIND claim
+# scenario     ::= "@scenario" KIND claim
+# claim        ::= { binder } expr ( "|->" | "|=>" ) [ delay ] expr
+# binder       ::= QUANT KIND VAR [ "where" expr ]   -- scoped by parens, a colon, or a block

@@ -1,0 +1,597 @@
+<title>Windows, Not Ghosts</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --paper:#F7F8F7; --ink:#1E2528; --ink-soft:#4A5458;
+  --glass:#0E7C86; --glass-fill:rgba(14,124,134,.14); --glass-soft:#5FA8AE;
+  --copper:#B0653A; --copper-fill:rgba(176,101,58,.10);
+  --ghost:#A8433E; --ghost-fill:rgba(168,67,62,.10);
+  --rule:#D8DEDC; --plate:#FFFFFF; --code-bg:#EEF1F0;
+}
+:root:not([data-theme="light"]){}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#14181B; --ink:#E8ECEA; --ink-soft:#9FAAA6;
+    --glass:#4FC1CC; --glass-fill:rgba(79,193,204,.16); --glass-soft:#2E7E86;
+    --copper:#D89A6E; --copper-fill:rgba(216,154,110,.12);
+    --ghost:#D97B72; --ghost-fill:rgba(217,123,114,.13);
+    --rule:#2A3237; --plate:#1B2125; --code-bg:#232A2E;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#14181B; --ink:#E8ECEA; --ink-soft:#9FAAA6;
+  --glass:#4FC1CC; --glass-fill:rgba(79,193,204,.16); --glass-soft:#2E7E86;
+  --copper:#D89A6E; --copper-fill:rgba(216,154,110,.12);
+  --ghost:#D97B72; --ghost-fill:rgba(217,123,114,.13);
+  --rule:#2A3237; --plate:#1B2125; --code-bg:#232A2E;
+}
+*{box-sizing:border-box}
+body{background:var(--paper); color:var(--ink); margin:0;
+  font-family:"Source Sans 3",system-ui,sans-serif; font-size:17px; line-height:1.68;}
+main{max-width:74ch; margin:0 auto; padding:3rem 1.25rem 6rem;}
+h1,h2,h3{font-family:Spectral,Georgia,serif; text-wrap:balance; line-height:1.15;}
+h1{font-size:2.6rem; font-weight:700; margin:.2rem 0 .4rem;}
+h2{font-size:1.55rem; font-weight:600; margin:3.2rem 0 .8rem;}
+h3{font-size:1.12rem; font-weight:600; margin:1.6rem 0 .4rem;}
+.lede{font-size:1.16rem; color:var(--ink-soft); max-width:62ch;}
+.eyebrow{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:.72rem;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--glass); font-weight:500;}
+p{max-width:68ch; margin:.85rem 0;}
+code,.sig{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:.86em;
+  background:var(--code-bg); padding:.1em .35em; border-radius:4px;}
+pre{background:var(--code-bg); border:1px solid var(--rule); border-radius:8px;
+  padding: .9rem 1.1rem; overflow-x:auto; font-family:"JetBrains Mono",ui-monospace,monospace;
+  font-size:.82rem; line-height:1.55;}
+pre code{background:none; padding:0;}
+figure{margin:1.6rem 0 2rem; background:var(--plate); border:1px solid var(--rule);
+  border-radius:10px; padding:1.15rem 1.15rem .8rem; overflow-x:auto;}
+figcaption{font-size:.85rem; color:var(--ink-soft); border-top:1px solid var(--rule);
+  margin-top:.7rem; padding-top:.6rem; max-width:70ch;}
+figcaption b{color:var(--ink); font-family:"JetBrains Mono",ui-monospace,monospace;
+  font-size:.78rem; letter-spacing:.06em;}
+svg{display:block; max-width:100%; height:auto;}
+svg text{font-family:"JetBrains Mono",ui-monospace,monospace; fill:var(--ink);}
+svg .lbl{font-size:12px;} svg .lbl-s{font-size:10.5px; fill:var(--ink-soft);}
+svg .lbl-b{font-size:13px; font-weight:500;}
+svg .reg{fill:var(--copper-fill); stroke:var(--copper); stroke-width:1.4; rx:5;}
+svg .pane{fill:var(--glass-fill); stroke:var(--glass); stroke-width:1.6; rx:7;}
+svg .pane-t{fill:var(--glass); font-size:11.5px; font-weight:500;}
+svg .ghostbox{fill:var(--ghost-fill); stroke:var(--ghost); stroke-width:1.4;
+  stroke-dasharray:5 3; rx:5;}
+svg .ghost-t{fill:var(--ghost);}
+svg .wire{stroke:var(--ink-soft); stroke-width:1.2; fill:none;}
+svg .wire-g{stroke:var(--glass); stroke-width:1.6; fill:none;}
+svg .wire-r{stroke:var(--ghost); stroke-width:1.3; fill:none; stroke-dasharray:4 3;}
+svg .rulel{stroke:var(--rule); stroke-width:1;}
+svg .fog{fill:var(--code-bg); stroke:var(--rule); stroke-width:1; rx:5;}
+.aside{border-left:3px solid var(--glass); padding:.15rem 0 .15rem 1rem;
+  color:var(--ink-soft); margin:1.2rem 0; font-size:.95rem; max-width:64ch;}
+.term{font-weight:600;}
+a{color:var(--glass);}
+</style>
+
+<main>
+<p class="eyebrow">spec2rtl v2 · the route's vocabulary, drawn and explained</p>
+<h1>Windows, Not Ghosts</h1>
+<p class="lede">A patient walk through the central idea of the specification route: what
+a <em>window</em> is, why the specification declares windows instead of inventing shadow
+state, and how the same small set of pictures explains representatives, bounds, forms,
+and both inductions. Every figure is drawn from the miss-queue entry whose proofs earned
+these rules.</p>
+
+<h2><span class="eyebrow">1</span>&ensp;The three-layer stack</h2>
+
+<p>Begin with the problem the whole arrangement solves. A specification and a design
+speak two different languages. The specification wants to say things like <em>“an
+occupied slot remembers which request it holds”</em> — sentences about <b>meaning</b>.
+The design is made of registers, wires, and enables — objects of <b>construction</b>.
+If the specification talked about registers directly, it would be married to one
+particular design forever: rename a register, restructure the pipeline, and the
+specification would be wrong even though the device still behaves perfectly. We want
+the opposite: one specification that many designs can satisfy.</p>
+
+<p>The route's answer is to build a deliberate three-layer stack. At the top, the
+<span class="term">specification</span> states its promises over two kinds of things
+only: the <b>ports</b> (which every implementation must have — they are the interface)
+and a small set of named views it calls <span class="term">windows</span>. Crucially,
+the specification <em>declares</em> the windows but never defines them. Think of a
+declaration the way a programmer thinks of a function signature without a body: the
+spec says “there exists a view called <code>slot_valid(I,T)</code>, meaning <em>slot I
+holds an outstanding request at time T</em>, and here are my promises about whatever it
+shows.” Where the information comes from is deliberately left open.</p>
+
+<p>At the bottom sits one particular <span class="term">design</span> — real hardware.
+And between them sits the <span class="term">linkage</span>: a short, per-design
+adapter file whose only job is to say which real register each declared window looks
+at. One line per window. The linkage is the <em>only</em> place in the whole stack
+where the specification's vocabulary and the design's vocabulary appear in the same
+sentence.</p>
+
+<figure>
+<svg viewBox="0 0 760 330" role="img" aria-label="Specification, linkage, design stack">
+  <rect x="40" y="18" width="680" height="78" class="pane"/>
+  <text x="60" y="44" class="lbl-b">SPECIFICATION — the contract</text>
+  <text x="60" y="66" class="lbl-s">promises over ports + declared windows:</text>
+  <text x="60" y="84" class="lbl" fill="var(--glass)">slot_valid(I,T)&#160;&#160;slot_address(I,A,T)&#160;&#160;slot_line(I,J,T)&#160;&#160;slot_filled(I,T)</text>
+
+  <rect x="40" y="128" width="680" height="52" rx="6" fill="none" stroke="var(--ink-soft)" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text x="60" y="150" class="lbl-b">LINKAGE — the per-design adapter</text>
+  <text x="60" y="168" class="lbl-s">slot_valid(0,T) :- val(valid_0, 1, T).&#160;&#160;&#160;one line per window, per design</text>
+
+  <rect x="40" y="212" width="680" height="96" class="reg"/>
+  <text x="60" y="238" class="lbl-b" fill="var(--copper)">DESIGN — one of many possible implementations</text>
+  <rect x="60" y="252" width="112" height="40" class="reg"/><text x="72" y="276" class="lbl">valid_0</text>
+  <rect x="184" y="252" width="128" height="40" class="reg"/><text x="196" y="276" class="lbl">address_0</text>
+  <rect x="324" y="252" width="120" height="40" class="reg"/><text x="336" y="276" class="lbl">line_of_0</text>
+  <rect x="456" y="252" width="112" height="40" class="reg"/><text x="468" y="276" class="lbl">filled_0</text>
+  <rect x="580" y="252" width="120" height="40" class="reg"/><text x="592" y="276" class="lbl">data_0 …</text>
+
+  <line x1="380" y1="96" x2="380" y2="128" class="wire-g"/>
+  <line x1="380" y1="180" x2="380" y2="212" class="wire-g"/>
+  <polygon points="380,208 375,198 385,198" fill="var(--glass)"/>
+  <polygon points="380,124 375,114 385,114" fill="var(--glass)"/>
+</svg>
+<figcaption><b>Fig. 1</b> — The stack. The specification never names a register; the
+design never reads the spec; the linkage is the only place the two vocabularies touch.
+Swap the design, and only the linkage changes.</figcaption>
+</figure>
+
+<p>Follow one promise down the stack to make this concrete. The requirement, stated
+the way this route wants every requirement stated — as a cause and its consequence:</p>
+
+<p><b>If</b> a slot is occupied at cycle T <b>and</b> is still occupied at cycle T+1,
+<b>then</b> the address it shows at T+1 is the same address it showed at T.</p>
+
+<p>In the P&nbsp;→&nbsp;Q form the causal layer uses, the same sentence is:</p>
+
+<pre><code>slot_valid(0, T) && slot_valid(0, T+1)
+    -> slot_address(0, T+1) = slot_address(0, T)</code></pre>
+
+<p>Notice what the rule is written over: only the two windows. It does not mention a
+register. Then a particular design comes along with a register it happens to call
+<code>address_0</code>, and its linkage adds the one line connecting window to register.
+If tomorrow a different design stores addresses in a shared array instead of per-slot
+registers, the <em>same rule</em> is checked unchanged — only that design's linkage
+line looks different.</p>
+
+<p>Notice who does what. The person writing the specification never meets a register.
+The person building a design meets registers constantly — and meets the specification's
+vocabulary exactly once, when writing the linkage. That clean division of labor is the
+entire point of the stack, and it is what makes Section 4's freedom picture possible.</p>
+
+<h2><span class="eyebrow">2</span>&ensp;A window is a pane of glass</h2>
+
+<p>So what exactly <em>is</em> a window, mechanically? It is a named pane of glass held
+over some part of the design's state. Through the pane, the specification can see a
+value; it cannot touch it, and it cannot see anything the pane is not pointed at. Here
+are three real linkage lines from the miss queue, worth reading slowly:</p>
+
+<pre><code>slot_valid(0, T)      :- val(valid_0, 1, T).
+slot_address(0, A, T) :- val(address_0, A, T), val(valid_0, 1, T).
+slot_data(0, V, T)    :- val(line_data_0, V, T), val(filled_0, 1, T), val(valid_0, 1, T).</code></pre>
+
+<p>The first line reads: “the window <code>slot_valid(0,T)</code> shows <em>occupied</em>
+whenever the register <code>valid_0</code> holds 1 at time T.” Simple mounting — one
+pane, one register. But look at the second line: the address pane shows the value of the
+address register <em>only while the valid register also holds 1</em>. And the third goes
+further: the data pane shows the stored line <em>only while the slot is both valid and
+filled</em>. Those extra conditions are called <span class="term">scoping</span>, and
+they are not a stylistic flourish — they are load-bearing, for a reason that comes from
+the hardware itself.</p>
+
+<p>Here is the hardware reason. In this design, only the <code>valid</code> bit has a
+reset wire. The address, tag, pointer, and data registers power up holding garbage and
+are never cleared — clearing them would cost a reset network across hundreds of flops
+and buy nothing, because a free slot's contents are meaningless anyway. But “meaningless
+garbage sitting in registers” sounds like exactly the thing that breaks formal proofs:
+some promise reads the garbage, compares it to something, and produces a spurious
+counterexample. Scoping is what prevents that, completely: while <code>valid_0</code>
+is 0, the second and third linkage lines simply never fire, so there is <em>no atom at
+all</em> saying what the address or data of slot 0 is. A promise cannot trip over a
+value that, as far as the logic is concerned, does not exist. The garbage is not
+“handled” — it is invisible.</p>
+
+<figure>
+<svg viewBox="0 0 760 250" role="img" aria-label="Windows as scoped panes over registers">
+  <text x="40" y="28" class="lbl-b">slot 0 — valid = 1 (occupied)</text>
+  <rect x="40" y="40" width="100" height="38" class="reg"/><text x="52" y="63" class="lbl">valid=1</text>
+  <rect x="152" y="40" width="130" height="38" class="reg"/><text x="164" y="63" class="lbl">address</text>
+  <rect x="294" y="40" width="110" height="38" class="reg"/><text x="306" y="63" class="lbl">line_of</text>
+  <rect x="416" y="40" width="100" height="38" class="reg"/><text x="428" y="63" class="lbl">filled=1</text>
+  <rect x="528" y="40" width="110" height="38" class="reg"/><text x="540" y="63" class="lbl">data</text>
+  <rect x="146" y="32" width="500" height="54" class="pane"/>
+  <text x="360" y="106" class="pane-t">windows show everything: address, pointer, filled, data</text>
+
+  <text x="40" y="152" class="lbl-b">slot 1 — valid = 0 (free; registers hold garbage)</text>
+  <rect x="40" y="164" width="100" height="38" class="reg"/><text x="52" y="187" class="lbl">valid=0</text>
+  <g opacity="0.38">
+  <rect x="152" y="164" width="130" height="38" class="reg"/><text x="164" y="187" class="lbl">??????</text>
+  <rect x="294" y="164" width="110" height="38" class="reg"/><text x="306" y="187" class="lbl">???</text>
+  <rect x="416" y="164" width="100" height="38" class="reg"/><text x="428" y="187" class="lbl">?=1</text>
+  <rect x="528" y="164" width="110" height="38" class="reg"/><text x="540" y="187" class="lbl">????</text>
+  </g>
+  <text x="360" y="230" class="lbl-s">no pane exists here — the windows show nothing, so no promise can read the garbage</text>
+</svg>
+<figcaption><b>Fig. 2</b> — Scoping. The same registers, two occupancy states. The valid
+bit gates every other pane, so unreset garbage in a free slot costs neither correctness
+nor a reset network. This is why only <code>valid</code> carries a reset in the miss
+queue, and why the proof never once mentions power-on values.</figcaption>
+</figure>
+
+<p>One more thing a window buys, almost as a side effect: it is a place to put a
+<em>meaning</em>. The window's name and prose meaning (“slot I's line address, while it
+holds one”) belong to the specification and never change. Which register realizes it is
+the design's business, per design, and can change freely. The pane is the stable thing;
+the glass moves with the furniture behind it.</p>
+
+<h2><span class="eyebrow">3</span>&ensp;Why not a ghost? The picture that justifies the rule</h2>
+
+<p>To feel why the window discipline matters, walk through what almost everyone tries
+first — because it is genuinely the natural idea. Suppose you are specifying this miss
+queue and you think: “the spec should have its <em>own</em> little model of what's
+outstanding. I'll keep a set: when a request is accepted, add it; when a fill arrives,
+mark its waiters; when a delivery happens, remove one. Then my promises just compare
+the design against my model.” That invented, spec-side state — the model set, a shadow
+queue, a scoreboard, a <code>pending(T)</code> collection — is what this route calls a
+<span class="term">ghost</span>.</p>
+
+<p>The trouble arrives in two blows. First, you now have <b>two state machines
+describing one device</b> — the design's registers and your model — and nothing makes
+them agree by construction. So the proof needs a family of extra statements, the
+<span class="term">glue invariants</span>: “the design's valid bits correspond to my
+set's members,” “the design's stored addresses match my set's records,” and so on, one
+for every way the two machines could drift. Nobody writes these up front, because
+nobody knows in advance which ones the proof needs. Instead the induction discovers
+their absence one counterexample at a time: it finds a state where the design and the
+ghost disagree in some corner, you add a glue invariant to rule it out, and it finds
+the next corner. Entries in this repository went around this loop for days.</p>
+
+<p>Second — and this is the blow that ended the v1 route — the ghost's own machinery
+must be <em>ground</em>: the solver has to build every instance of the model's rules,
+over every value its state could take, before it can even start searching. On the
+route's larger entries that construction step alone ran for <b>900&nbsp;seconds</b>
+while the solver's own report showed <code>Solving:&nbsp;0.00s</code> — fifteen minutes
+of building the haystack, zero seconds of looking for the needle, and then a timeout.
+That line in a log is the tombstone of the ghost approach.</p>
+
+<figure>
+<svg viewBox="0 0 760 300" role="img" aria-label="Ghost versus window comparison">
+  <text x="60" y="26" class="lbl-b ghost-t">THE GHOST WAY</text>
+  <rect x="40" y="40" width="320" height="64" class="reg"/>
+  <text x="56" y="64" class="lbl">design registers</text>
+  <text x="56" y="84" class="lbl-s">valid, address, line_of, filled …</text>
+  <rect x="40" y="140" width="320" height="64" class="ghostbox"/>
+  <text x="56" y="164" class="lbl ghost-t">invented shadow state</text>
+  <text x="56" y="184" class="lbl-s">pending(T), age(T), ghost queue …</text>
+  <path d="M 90 104 C 80 122, 80 122, 90 140" class="wire-r"/>
+  <path d="M 200 104 C 190 122, 190 122, 200 140" class="wire-r"/>
+  <path d="M 310 104 C 300 122, 300 122, 310 140" class="wire-r"/>
+  <text x="56" y="236" class="lbl ghost-t">glue invariants: “design ≡ shadow”</text>
+  <text x="56" y="256" class="lbl-s">invented one by one, ground and searched forever</text>
+  <text x="56" y="284" class="lbl-s">v1's wall: 900 s grounding, Solving: 0.00 s</text>
+
+  <text x="440" y="26" class="lbl-b" fill="var(--glass)">THE WINDOW WAY</text>
+  <rect x="420" y="40" width="300" height="64" class="reg"/>
+  <text x="436" y="64" class="lbl">design registers</text>
+  <text x="436" y="84" class="lbl-s">the only state that exists</text>
+  <rect x="412" y="132" width="316" height="56" class="pane"/>
+  <text x="436" y="156" class="pane-t">windows: declared views, mounted by linkage</text>
+  <text x="436" y="174" class="lbl-s">promises read the panes directly</text>
+  <line x1="570" y1="104" x2="570" y2="132" class="wire-g"/>
+  <text x="436" y="228" class="lbl" fill="var(--glass)">nothing to glue — no copy exists</text>
+  <text x="436" y="252" class="lbl-s">Am2901 &amp; miss queue: inductive at K=1,</text>
+  <text x="436" y="270" class="lbl-s">zero hand-written invariants</text>
+</svg>
+<figcaption><b>Fig. 3</b> — The doctrine in one frame. A ghost is a copy; a copy needs
+glue; glue is what inductions choke on and grounders drown in. A window is not a copy —
+it is the design's own state, seen through a named pane — so the glue never exists to
+be invented.</figcaption>
+</figure>
+
+<p>Now look at the right half of the figure. The window way keeps exactly <em>one</em>
+state machine — the design's — and lets the specification's promises read it through
+the panes. There is no second copy, therefore no drift, therefore no glue, therefore
+nothing for the induction to keep requesting. This is not a stylistic preference; it
+shows up directly in the numbers. The two cleanest proofs in this repository —
+the Am2901 register-file slice and this miss queue — both went through their induction
+at the very first strength (K=1) with <b>zero</b> hand-written invariants. Not because
+those devices are trivial, but because with windows there was literally nothing to
+glue.</p>
+
+<div class="aside">One narrow exception survives, on purpose. A specification may keep
+an event-driven reference model — a model queue, a replaying referee — if every one of
+its rules is gated by the word <code>refmodel</code>. Gated machinery runs only in
+bounded, scripted simulation legs; it is excluded from the for-all-time claim, and the
+tool's report says so out loud. In other words: a ghost is allowed to be a
+<em>referee for simulations</em>; it is never allowed to be <em>state for proofs</em>.</div>
+
+<h2><span class="eyebrow">4</span>&ensp;Freedom: one contract, many designs</h2>
+
+<p>Why go to all this trouble? Because of what it buys: the specification stops being a
+description of one circuit and becomes a <b>contract that many circuits can sign</b>.
+Since promises touch hardware only through the linkage, a second, structurally
+different design can mount the same windows — with its own one-line-per-window adapter
+— and be proven against the identical promise set, unchanged.</p>
+
+<p>This is the practical test of whether a specification is genuinely above the RTL. If
+only one implementation could ever satisfy it, the “specification” was just the RTL
+transcribed into logic syntax, and proving them equivalent proves only that the
+transcription was careful. If several substantially different implementations satisfy
+it, the specification captured meaning and left construction free — which is what a
+specification is <em>for</em>. And this is not an aspiration in this project; it has
+been measured. This repository's APB bridge has one English specification and two
+proven designs that differ in real structure. The miss queue exists as a flat monolith
+(every register at top level, comparators inline) and as a composed machine
+(pure-state slot modules, two comparator banks, policy in the glue) — both certified
+against one contract. When an entry closes with such a pair, we call it a
+<span class="term">freedom witness</span>.</p>
+
+<figure>
+<svg viewBox="0 0 760 270" role="img" aria-label="Two designs mounting the same windows">
+  <rect x="150" y="16" width="460" height="46" class="pane"/>
+  <text x="380" y="44" text-anchor="middle" class="pane-t">one contract · one window vocabulary · one promise set</text>
+
+  <line x1="290" y1="62" x2="200" y2="108" class="wire-g"/>
+  <line x1="470" y1="62" x2="560" y2="108" class="wire-g"/>
+  <text x="176" y="98" class="lbl-s">linkage A</text>
+  <text x="536" y="98" class="lbl-s">linkage B</text>
+
+  <rect x="60" y="112" width="290" height="120" class="reg"/>
+  <text x="76" y="136" class="lbl-b" fill="var(--copper)">flat monolith</text>
+  <text x="76" y="158" class="lbl-s">all registers at top level,</text>
+  <text x="76" y="176" class="lbl-s">comparators inline,</text>
+  <text x="76" y="194" class="lbl-s">one file</text>
+  <text x="76" y="220" class="lbl-s">window ← valid_0, line_of_0 …</text>
+
+  <rect x="410" y="112" width="290" height="120" class="reg"/>
+  <text x="426" y="136" class="lbl-b" fill="var(--copper)">composed machine</text>
+  <text x="426" y="158" class="lbl-s">pure-state slot modules,</text>
+  <text x="426" y="176" class="lbl-s">two pure-equality CAMs,</text>
+  <text x="426" y="194" class="lbl-s">policy in the glue</text>
+  <text x="426" y="220" class="lbl-s">window ← slot_0.line_out …</text>
+
+  <text x="380" y="258" text-anchor="middle" class="lbl" fill="var(--glass)">both certified — the freedom witness</text>
+</svg>
+<figcaption><b>Fig. 4</b> — Implementation freedom. The window names are the fixed
+interface; each design brings its own linkage. If only one implementation could ever
+satisfy the contract, the contract would just be RTL in another syntax.</figcaption>
+</figure>
+
+<p>One honesty note belongs here, because it is easy to oversell. The window
+vocabulary is not infinitely neutral: choosing windows named <code>slot_…(I,…)</code>
+does quietly assume the design keeps per-slot state of <em>some</em> kind. That is
+accepted and stated in the methodology as “the window vocabulary constrains the
+implementation family.” The constraint is part of the specification's meaning — the
+skill is in constraining no more than the requirement itself does.</p>
+
+<h2><span class="eyebrow">5</span>&ensp;Semantic memory: the three honest representations</h2>
+
+<p>Some promises inherently relate two moments in time. “Every accepted request is
+later delivered” compares an event now with an event later, so <em>something</em>,
+somewhere, must remember. The ghost chapter ruled out one answer — invent spec-side
+memory — so the methodology must say what the honest answers are. There are exactly
+three, and every remembered thing in a specification must visibly pick one.</p>
+
+<h3>① A token, when the remembered thing is data</h3>
+<p>Addresses, tags, and payload words are never treated as numbers in this route; each
+is an opaque symbol — a <span class="term">token</span> — like a colored marble the
+hardware passes along without ever looking inside. “The delivered word equals the
+accepted word” then needs no memory machinery at all: the proof simply checks that the
+marble coming out is <em>the very same marble</em> that went in. Identity of symbols is
+free, exact, and never enumerates a single bit pattern, which is why a 128-bit payload
+costs the proof no more than a 1-bit one.</p>
+
+<h3>② A structural representative, when the remembered thing is a class</h3>
+<p>Sometimes the specification wants to talk about a <em>group</em>: “the line” (all
+slots waiting on one memory address), “the episode,” “the transaction family.” The
+natural spelling — two slots are in the same line when their addresses are equal — is a
+trap, and the miss queue walked into it fully before finding the way out. Defining the
+group <em>relationally</em> means the proof's starting states must range over every
+possible pattern of pairwise equalities among all held addresses: with 40 slots, about
+1,600 interdependent unknowns, coupled by the rule that equality is transitive. The
+induction step drowned in exactly that search. The repair — called R9 in the entry — is
+to give the class a small, concrete <b>name that the hardware itself carries</b>: every
+slot stores <code>line_of</code>, the index of its line's <em>owner</em> (the first
+slot of the group; an owner points at itself). Now “same line” is a comparison of two
+small indices, the fill finds its waiters by following pointers, and the quadratic
+search space simply does not exist. The general rule: when a spec needs an equivalence
+class, don't define it by a relation — elect a representative and store its name.</p>
+
+<h3>③ A bounded window, when the remembered thing is an unmet obligation</h3>
+<p>“Accepted, therefore <em>eventually</em> delivered” is the one memory the engine
+cannot honestly discharge as written: unbounded <em>eventually</em> is a liveness
+claim, and a bounded solver can neither confirm nor refute “someday.” So bare
+<code>eventually</code> is <b>refused, with advice</b> — and the advice is a menu of
+three honest spellings. Say <em>within N cycles</em> (that is plain finite safety, and
+cheap). Or say it <em>work-conservingly</em>: “while any obligation is unmet, the
+server is serving one” — a statement checkable at every single instant. Or, when
+neither fits, state an explicit <em>ranking argument</em>: a quantity that shrinks
+every cycle and cannot shrink forever. What is never allowed is the silent weakening of
+“eventually” into “reachable” — a proof that delivery is <em>possible</em> is not a
+proof that it <em>happens</em>.</p>
+
+<figure>
+<svg viewBox="0 0 760 330" role="img" aria-label="Token, representative, bounded window">
+  <text x="40" y="26" class="lbl-b" fill="var(--glass)">① TOKEN — when it is data</text>
+  <rect x="40" y="40" width="150" height="36" class="pane"/><text x="54" y="63" class="lbl">in(data, 3)</text>
+  <path d="M 190 58 H 300" class="wire"/><polygon points="300,58 291,53 291,63" fill="var(--ink-soft)"/>
+  <rect x="304" y="40" width="120" height="36" class="reg"/><text x="318" y="63" class="lbl">held</text>
+  <path d="M 424 58 H 534" class="wire"/><polygon points="534,58 525,53 525,63" fill="var(--ink-soft)"/>
+  <rect x="538" y="40" width="182" height="36" class="pane"/><text x="552" y="63" class="lbl">out = in(data, 3)</text>
+  <text x="40" y="102" class="lbl-s">the value is an opaque symbol, routed whole; “delivered = accepted” is the SAME symbol — free, exact, never enumerated</text>
+
+  <text x="40" y="146" class="lbl-b" fill="var(--glass)">② STRUCTURAL REPRESENTATIVE — when it is a class (the R9 lesson)</text>
+  <rect x="40"  y="160" width="120" height="52" class="reg"/><text x="52" y="180" class="lbl">slot 0</text><text x="52" y="200" class="lbl-s">line_of=0 ●</text>
+  <rect x="200" y="160" width="120" height="52" class="reg"/><text x="212" y="180" class="lbl">slot 1</text><text x="212" y="200" class="lbl-s">line_of=0</text>
+  <rect x="360" y="160" width="120" height="52" class="reg"/><text x="372" y="180" class="lbl">slot 2</text><text x="372" y="200" class="lbl-s">line_of=3</text>
+  <rect x="520" y="160" width="120" height="52" class="reg"/><text x="532" y="180" class="lbl">slot 3</text><text x="532" y="200" class="lbl-s">line_of=3 ●</text>
+  <path d="M 260 160 C 230 132, 150 132, 105 158" class="wire-g"/><polygon points="105,158 116,152 112,162" fill="var(--glass)"/>
+  <path d="M 420 212 C 450 240, 530 240, 575 214" class="wire-g"/><polygon points="575,214 564,220 568,210" fill="var(--glass)"/>
+  <text x="40" y="248" class="lbl-s">“same line” = same owner index. A pointer register replaces address-vs-address comparison —</text>
+  <text x="40" y="266" class="lbl-s">the relational spelling cost a quadratic, transitivity-coupled search; the index costs log₂(depth) bits</text>
+
+  <text x="40" y="306" class="lbl-b" fill="var(--glass)">③ BOUNDED WINDOW — when it is elapsed obligation</text>
+  <line x1="40" y1="322" x2="700" y2="322" class="rulel"/>
+  <line x1="180" y1="314" x2="180" y2="330" class="wire"/><line x1="480" y1="314" x2="480" y2="330" class="wire-g"/>
+  <text x="186" y="318" class="lbl-s">accept</text><text x="486" y="318" class="lbl" fill="var(--glass)">deliver within N</text>
+  <text x="560" y="318" class="lbl-s ghost-t">“eventually”: refused</text>
+</svg>
+<figcaption><b>Fig. 5</b> — The representation policy. Data is remembered as itself
+(a token); a class is remembered by a representative the hardware carries; an
+obligation is remembered under a bound. Bare unbounded <i>eventually</i> is refused
+with advice — a bound, a work-conserving spelling, or an explicit ranking argument.</figcaption>
+</figure>
+
+<h2><span class="eyebrow">6</span>&ensp;Forms, and the seams where races live</h2>
+
+<p>The layers above describe how promises are <em>checked</em>. There is also the
+question of how they are <em>written</em>, and the answer starts from an observation
+about people: a domain expert can audit a causal sentence — “if the output is valid and
+the consumer is not ready, the output holds” — far more reliably than a page of logic
+rules. So the human-facing layer of a specification is built from
+<span class="term">causal sentences</span>, and each recognized sentence is a
+<span class="term">form</span>: a named template that expands into window promises.
+The expansion is <em>textual and visible</em> — it is written into the contract file
+where anyone can read it:</p>
+
+<pre><code>form: hold-under-backpressure(out)          — what the author writes
+  ⇩ expands, in the file, to
+bad(hold_wrong, T+1) :- live(T), live(T+1), val(out_valid,1,T), val(out_ready,0,T),
+                        val(out_valid,0,T+1).
+bad(hold_wrong, T+1) :- live(T), live(T+1), val(out_valid,1,T), val(out_ready,0,T),
+                        val(out_data,V,T), not val(out_data,V,T+1).</code></pre>
+
+<p>Read the two expanded rules aloud and they are the sentence, twice: “it is wrong if,
+while valid and blocked, valid drops by the next cycle” and “…if the data changes by
+the next cycle.” Nothing in either rule says <em>how</em> the hardware holds — no
+enable, no skid buffer, no mux is mentioned — so the expansion is longer than the
+English but not lower-level than it. And the reason the expansion must sit visibly in
+the file is a matter of trust, learned the hard way: if a compiler produced the rules
+and nobody read them, a compiler bug would produce a <em>wrong specification proven
+faithfully</em> — a false certificate wearing a valid proof, the worst failure this
+route knows. Hence the rule: <b>the contract a person reads is, literally, the
+contract the machine proves. A form is a scribe, never an oracle.</b></p>
+
+<p>Now the warning that must always travel with the comfort. Causal sentences are
+individually easy to believe — and every race this route has ever found lived in the
+gap <em>between</em> two of them, at a single clock edge where both wanted to act. The
+miss queue's R3 is the canonical story. One sentence says: “a request whose line is
+already in flight joins that line.” Another says: “when a line's fill arrives, everyone
+waiting on it receives the data.” Both are plainly correct. Now let both fire on the
+same edge: a request arrives for a line <em>in the very cycle its fill is landing</em>.
+The joiner is admitted to a line whose fill has just passed — and will wait forever for
+a delivery that already happened. In fact the first version of the contract was
+<em>unsatisfiable</em> in that window: it simultaneously demanded the newcomer join
+(it matched an in-flight slot) and condemned the orphan it became. The repair was a
+resolution — “a slot whose fill is arriving this cycle is no longer joinable; such a
+request starts a fresh episode” — discovered only because the certificate machinery
+forced the seam into the open.</p>
+
+<figure>
+<svg viewBox="0 0 760 210" role="img" aria-label="Two causal rules colliding at one edge">
+  <line x1="60" y1="150" x2="700" y2="150" class="rulel"/>
+  <line x1="380" y1="60" x2="380" y2="170" stroke="var(--ghost)" stroke-width="2"/>
+  <text x="380" y="192" text-anchor="middle" class="lbl ghost-t">one clock edge — the seam</text>
+
+  <path d="M 120 100 C 220 70, 300 70, 372 96" class="wire-g"/>
+  <polygon points="372,96 361,92 366,102" fill="var(--glass)"/>
+  <text x="80" y="120" class="lbl">“a matching request JOINS its line”</text>
+
+  <path d="M 640 100 C 540 70, 460 70, 388 96" class="wire-g"/>
+  <polygon points="388,96 399,92 394,102" fill="var(--glass)"/>
+  <text x="452" y="120" class="lbl">“the line's fill LANDS everyone”</text>
+
+  <text x="380" y="44" text-anchor="middle" class="lbl-b ghost-t">both at once? the joiner would wait forever</text>
+</svg>
+<figcaption><b>Fig. 6</b> — The seam. Individually, both sentences are obviously right;
+at the same edge they contradict. Forms make the easy majority of a specification
+frictionless; the adversarial-misreading pass and the resolution record exist for the
+seams, and no form is ever allowed to paper one over.</figcaption>
+</figure>
+
+<h2><span class="eyebrow">7</span>&ensp;The same pictures, one level up: the two inductions</h2>
+
+<p>Finally, the windows are not just how promises are <em>stated</em> — they are what
+the proofs quantify over. It is worth seeing both proofs as the same maneuver.</p>
+
+<p><b>Induction in time</b> answers “does this hold forever?” without running forever.
+The argument has two halves. The <em>base</em> shows nothing bad can happen in the
+first cycle after reset. The <em>step</em> shows: take <b>any</b> state in which every
+promise holds — not a reachable state, not a simulated state, literally any assignment
+the windows could show that satisfies the promise set — run <b>one</b> clock edge with
+<b>any</b> inputs, and no promise breaks. If both halves hold, then no <em>first</em>
+violation can ever exist; and if there is never a first violation, there is never a
+violation at all. The pane labeled “ALL promises hold” in the figure's top row is
+literally the promise set, read through the windows of Figures 1 and 2, laid over an
+arbitrary state.</p>
+
+<p><b>Induction in size</b> plays the identical move on the other axis. The question is
+“does this hold at every depth — 4 slots, 40, 400?” The wrong answer is to run the
+certificate at each size; sizes are unbounded, and (in the user's words, now a standing
+rule) running them one by one loses the purpose of induction. The right answer mirrors
+the time step: keep a small <em>window</em> of two or three generic slots concrete, and
+replace all the other slots by a handful of free <b>summary bits</b> at the exact
+interface where the design's own logic summarizes them anyway — “someone before me is
+free,” “someone matched,” “someone ahead of me is ready to drain.” Constrain those free
+bits only by the assumed promises, and one unsatisfiability result covers a queue of
+<em>every</em> depth at once — because any real machine's window, at any size, is just
+one valuation of those bits. The unbounded thing is replaced by a free,
+promise-constrained stand-in: exactly what the time step did to “all past states.”</p>
+
+<figure>
+<svg viewBox="0 0 760 300" role="img" aria-label="Time induction and size induction">
+  <text x="40" y="26" class="lbl-b" fill="var(--glass)">induction in TIME</text>
+  <line x1="60" y1="96" x2="700" y2="96" class="rulel"/>
+  <line x1="240" y1="86" x2="240" y2="106" class="wire"/><text x="232" y="126" class="lbl">T</text>
+  <line x1="520" y1="86" x2="520" y2="106" class="wire"/><text x="506" y="126" class="lbl">T+1</text>
+  <rect x="150" y="40" width="180" height="40" class="pane"/>
+  <text x="164" y="65" class="pane-t">ALL promises hold</text>
+  <path d="M 330 60 C 390 40, 430 40, 470 58" class="wire"/>
+  <polygon points="470,58 459,54 463,64" fill="var(--ink-soft)"/>
+  <text x="352" y="36" class="lbl-s">any one step, any inputs</text>
+  <rect x="460" y="40" width="190" height="40" rx="7" fill="none" stroke="var(--ink-soft)" stroke-width="1.4" stroke-dasharray="5 3"/>
+  <text x="474" y="65" class="lbl">can anything break?</text>
+
+  <text x="40" y="176" class="lbl-b" fill="var(--glass)">induction in SIZE</text>
+  <rect x="60"  y="196" width="90" height="48" class="fog"/><text x="76" y="224" class="lbl-s">Σ bits</text>
+  <rect x="162" y="190" width="110" height="58" class="pane"/><text x="176" y="216" class="lbl">slot i</text><text x="176" y="236" class="lbl-s">concrete</text>
+  <rect x="284" y="190" width="110" height="58" class="pane"/><text x="298" y="216" class="lbl">slot j</text><text x="298" y="236" class="lbl-s">concrete</text>
+  <rect x="406" y="196" width="90" height="48" class="fog"/><text x="420" y="224" class="lbl-s">Σ bits</text>
+  <rect x="508" y="196" width="90" height="48" class="fog"/><text x="522" y="224" class="lbl-s">Σ bits</text>
+  <text x="614" y="226" class="lbl-s">… any depth</text>
+  <text x="60" y="282" class="lbl-s">Σ = free summary bits at the fold interface (someone-before-me-is-free, someone-matched …),</text>
+  <text x="60" y="300" class="lbl-s">constrained only by the assumed promises — one UNSAT covers every size</text>
+</svg>
+<figcaption><b>Fig. 7</b> — Double induction. Both are the same maneuver: replace the
+unbounded thing (all past states; all other slots) with a free, promise-constrained
+stand-in, then refute one step. The window pane in the top row is literally the promise
+set read through the windows of Figs. 1–2.</figcaption>
+</figure>
+
+<h2><span class="eyebrow">·</span>&ensp;The vocabulary on one card</h2>
+<p><span class="term">Window</span> — a declared, named view into design state, with a
+prose meaning; the specification's only state vocabulary. It is declared by the spec
+and defined by nobody until a linkage mounts it.&ensp;
+<span class="term">Linkage</span> — the per-design adapter: one line per window, saying
+which register the pane looks at, scoped so that invisible means harmless.&ensp;
+<span class="term">Ghost</span> — invented spec-side state, a shadow copy of the
+device; forbidden outside <code>refmodel</code>-gated simulation referees, because a
+copy demands glue and glue is what kills inductions.&ensp;
+<span class="term">Token</span> — a datum as an opaque symbol; remembering it is
+keeping it, and equality is being the same symbol.&ensp;
+<span class="term">Representative</span> — a class remembered as a small index the
+hardware carries (the owner's slot number), instead of a relation among members.&ensp;
+<span class="term">Bound</span> — an obligation remembered as “within N,” or
+work-conservingly, or by a ranking argument; never as bare “eventually.”&ensp;
+<span class="term">Form</span> — a causal sentence with a committed, visible expansion
+into promises; a scribe, never an oracle.&ensp;
+<span class="term">Seam</span> — the clock edge where two causal sentences meet; where
+every race so far has lived; the reason the misreading pass and the resolution record
+exist.</p>
+
+<p class="lede" style="margin-top:2.4rem">Sources: the DSL layer's methodology
+(<code>docs/spec2rtl2/ROUTE_METHODOLOGY.md</code>), the position paper
+(<code>docs/spec2rtl2/ABSTRACTION.md</code>), and the miss-queue entry
+(<code>archive/spec2rtl2/rv_missq/</code>), whose proofs supplied every number and
+every race in these figures.</p>
+</main>

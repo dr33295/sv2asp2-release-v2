@@ -1,0 +1,211 @@
+# ==============================================================================
+# rvMissq -- instruction-fetch miss queue
+# The SIGNATURE: what wires exist. The English specification is SPECIFICATION.md;
+# the checkable specification is rvMissq.spec. Each port carries its interface and
+# its role, which is how the specification speaks of `request` and `fill` rather
+# than of wires.
+# ==============================================================================
+
+metadata:
+  block_name: "rvMissq"
+  version: "0.2.0"
+  status: "Draft"
+  description: "Nonblocking instruction-fetch miss queue with demand/prefetch classes"
+
+parameters:
+  - name: "depth"
+    type: "integer"
+    default: 4
+    description: >
+      Entries the queue holds. THE DEFAULT IS THE BUILT ENTRY'S CONFIGURATION, and that is
+      a rule with an incident behind it: these defaults once said 8 while the design was
+      generated at 4, and the compiled contract judged a depth-4 queue by depth-8 arithmetic
+      -- "the queue has room" at four live entries -- and blamed the design for refusing.
+      Nothing checked the two artifacts against each other; the induction found it.
+  - name: "maxOutstandingFetches"
+    type: "integer"
+    default: 2
+    description: "Fetches that may be in flight at memory at once"
+  - name: "demandReserve"
+    type: "integer"
+    default: 1
+    description: "Entries kept free for demand misses; prefetch may not take them"
+  - name: "addressWidth"
+    type: "integer"
+    default: 26
+    description: "Line address: 32-bit physical address, 64-byte lines"
+  - name: "dataWidth"
+    type: "integer"
+    default: 128
+    description: "A cache line as delivered"
+  - name: "tagWidth"
+    type: "integer"
+    default: 4
+    description: "Destination tag; opaque to this block"
+
+clocks_and_resets:
+  - name: "clk"
+    type: "clock"
+    edge: "posedge"
+    description: "Primary system clock"
+  - name: "resetN"
+    type: "reset"
+    polarity: "active_low"
+    synchronous: "unspecified"     # the contract is neutral (decision D9)
+    discipline: "once"             # asserted before cycle 1, never again
+    description: "System reset"
+
+interfaces:
+  - name: "request"
+    protocol: "readyValid"
+    side: "receives"
+    description: "A miss arriving from the fetch pipe, demand or prefetch"
+  - name: "redirect"
+    protocol: "validOnly"
+    side: "receives"
+    description: "The fetch pipe has changed direction; demand entries downgrade"
+  - name: "memoryRequest"
+    protocol: "readyValid"
+    payload: "reprioritisable"     # DEPARTURE from the usual readyValid rule -- see below
+    side: "sends"
+    description: >
+      A line enquiry to memory. PAYLOAD IS NOT HELD STABLE WHILE VALID IS HIGH. The usual
+      ready/valid rule is that once valid is asserted the payload stays put until the
+      handshake; this interface deliberately breaks it. The enquiry is an OFFER, and the
+      offer may be replaced by a higher-priority one until it is taken -- so if memory
+      stalls while a prefetch enquiry is presented and a demand miss then arrives, the
+      presented address changes to the demand's on the next cycle. That is the point:
+      demand-before-prefetch would otherwise be delayed by however long memory chose to
+      stall. An integrator that latches the address on valid rather than on the handshake
+      will fetch the wrong line.
+  - name: "fill"
+    protocol: "validOnly"
+    side: "receives"
+    description: "A line returning from memory; cannot be refused"
+  - name: "forward"
+    protocol: "validOnly"
+    side: "sends"
+    description: "A demand request answered back to the fetch pipe"
+
+ports:
+  - name: "requestValid"
+    direction: "input"
+    width: 1
+    clock: "clk"
+    interface: "request"
+    role: "valid"
+    description: "A miss is presented"
+  - name: "requestReady"
+    direction: "output"
+    width: 1
+    clock: "clk"
+    interface: "request"
+    role: "ready"
+    description: "The block can take it this cycle"
+  - name: "requestAddress"
+    direction: "input"
+    width: "addressWidth"
+    clock: "clk"
+    interface: "request"
+    role: "opaque"
+    description: "Line address of the miss"
+  - name: "requestTag"
+    direction: "input"
+    width: "tagWidth"
+    clock: "clk"
+    interface: "request"
+    role: "opaque"
+    description: "Destination tag; returned unchanged on forward"
+  - name: "requestIsDemand"
+    direction: "input"
+    width: 1
+    clock: "clk"
+    interface: "request"
+    role: "numeric"
+    description: "1 = demand miss (the fetch pipe is waiting), 0 = prefetch"
+
+  - name: "redirectValid"
+    direction: "input"
+    width: 1
+    clock: "clk"
+    interface: "redirect"
+    role: "valid"
+    description: "Control flow changed; every demand entry downgrades to prefetch"
+
+  - name: "fetchStall"
+    direction: "output"
+    width: 1
+    clock: "clk"
+    interface: "-"
+    role: "level"
+    description: "The fetch pipe must not present a new demand miss this cycle"
+
+  - name: "memoryRequestValid"
+    direction: "output"
+    width: 1
+    clock: "clk"
+    interface: "memoryRequest"
+    role: "valid"
+    description: "The block is asking memory for a line"
+  - name: "memoryRequestReady"
+    direction: "input"
+    width: 1
+    clock: "clk"
+    interface: "memoryRequest"
+    role: "ready"
+    description: "Memory takes the enquiry this cycle"
+  - name: "memoryRequestAddress"
+    direction: "output"
+    width: "addressWidth"
+    clock: "clk"
+    interface: "memoryRequest"
+    role: "opaque"
+    description: "The line being asked for"
+
+  - name: "fillValid"
+    direction: "input"
+    width: 1
+    clock: "clk"
+    interface: "fill"
+    role: "valid"
+    description: "Memory is returning a line"
+  - name: "fillAddress"
+    direction: "input"
+    width: "addressWidth"
+    clock: "clk"
+    interface: "fill"
+    role: "opaque"
+    description: "Which line is being returned"
+  - name: "fillData"
+    direction: "input"
+    width: "dataWidth"
+    clock: "clk"
+    interface: "fill"
+    role: "opaque"
+    description: "The line's contents"
+
+  - name: "forwardValid"
+    direction: "output"
+    width: 1
+    clock: "clk"
+    interface: "forward"
+    role: "valid"
+    description: "A demand request is being answered"
+  - name: "forwardTag"
+    direction: "output"
+    width: "tagWidth"
+    clock: "clk"
+    interface: "forward"
+    role: "opaque"
+    description: "Destination tag of the request being answered"
+  - name: "forwardData"
+    direction: "output"
+    width: "dataWidth"
+    clock: "clk"
+    interface: "forward"
+    role: "opaque"
+    description: "That request's line data, as memory returned it"
+
+registers: []      # this block has no software-visible register map
+
+functional_description: "See SPECIFICATION.md -- the English specification in force."

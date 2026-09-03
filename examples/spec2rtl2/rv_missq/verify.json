@@ -1,0 +1,73 @@
+{
+  "refine": [
+    {
+      "design": "l1.lp",
+      "spec": "spec.lp",
+      "induct": 1,
+      "log": "certificate.log",
+      "contains": [
+        "INDUCTIVE at K=1",
+        "NOT EXERCISED",
+        "no ghost state"
+      ]
+    },
+    {
+      "design": "l1.lp",
+      "spec": "spec.lp",
+      "induct": 1,
+      "free_reset": true,
+      "induction_only": true,
+      "log": "certificateFreeReset.log",
+      "contains": [
+        "INDUCTIVE at K=1",
+        "emptyUnderReset",
+        "quietUnderReset"
+      ]
+    },
+    {
+      "design": "l1.lp",
+      "spec": "specFv.lp",
+      "induct": 1,
+      "log": "certificateFv.log",
+      "contains": [
+        "INDUCTIVE at K=1"
+      ]
+    }
+  ],
+  "second_points": [
+    {
+      "regenerate": [
+        "{python}",
+        "generate.py",
+        "--depth",
+        "2",
+        "--fetches",
+        "1",
+        "-o",
+        "{out}"
+      ],
+      "design": "l1.lp",
+      "spec": "spec.lp",
+      "induct": 1,
+      "const_overrides": {
+        "depth": 2,
+        "maxOutstandingFetches": 1
+      },
+      "log": "certificateSecondPoint.log",
+      "contains": [
+        "INDUCTIVE at K=1"
+      ],
+      "must_reject": "l1.lp"
+    }
+  ],
+  "roundtrips": [
+    {
+      "design": "l1.lp",
+      "scenario": "roundtrip_scenario.lp",
+      "icarus": true,
+      "contains": [
+        "ROUNDTRIP: OK"
+      ]
+    }
+  ]
+}

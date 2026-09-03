@@ -1,0 +1,20 @@
+# sv2asp2 configuration -- machine-specific paths and design-tree plugins.
+#
+# Discovery (first hit wins): --config PATH, $SV2ASP_CONFIG, ./sv2asp.toml,
+# ~/.config/sv2asp/config.toml
+#
+# Tool resolution (first hit wins): an explicit argument, the environment variable
+# (CLINGO_BIN, SV2ASP_PYTHON, LEAN_BIN, LAKE_BIN), the [tools] entry below, then PATH.
+# If everything is already on PATH, you do not need this file at all.
+
+[tools]
+# clingo = "/opt/homebrew/bin/clingo"     # must have embedded-Python support
+# python = "/path/to/env/bin/python"
+# lean   = "/path/to/lean"                # only for the Lean legs
+# lake   = "/path/to/lake"
+
+# Design-specific material travels with the DESIGN, never inside the tool:
+# [funcs]
+# plugins = ["sv2asp_local/my_funcs.py"]
+# [primitives]
+# plugins = ["sv2asp_local/my_prims.py"]

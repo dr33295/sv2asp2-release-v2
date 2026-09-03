@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sv2asp"
+version = "2.0.0"
+description = "Deterministic SystemVerilog -> ASP (clingo) translator with Clark-completion-based hardware verification"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+    "pyslang>=10,<11",   # the frontend, validated against the 10.x accessor API
+    "clingo>=5.6",       # the solver's PYTHON module (the incremental sessions). The
+                         # command-line clingo is a SYSTEM package and cannot be replaced
+                         # by this one: the module has no embedded-Python support, and
+                         # every solve carries a `#script (python)` block.
+    "lark>=1.1",         # the grammar engine, fed the EBNF's translation at import
+    "PyYAML>=6",         # the signature and the ladder
+]
+
+[project.scripts]
+sv2asp = "sv2asp.cli:main"
+sv2asp2 = "sv2asp.aspfirst2.__main__:main"     # the route's CLI (compile/certificate/verify/...)
+
+[tool.setuptools.packages.find]
+where = ["src"]

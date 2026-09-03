@@ -1,0 +1,347 @@
+# rvMissq.cnl -- the miss queue in the CONTROLLED-ENGLISH surface: the user's draft,
+# verbatim (2026-08-31), and the surface's REFERENCE CORPUS. The acceptance bar, fixed
+# before any compiler code (methodology Chapter 35.6): compiled, this file must produce
+# the SAME certificate verdicts as the symbolic rvMissq.spec -- the real design green,
+# the sabotaged designs red, each through the same monitors.
+#
+# FIRST CORRECTION (2026-08-31, applying the frozen rules): the draft's three uses of
+# `already` are removed -- Chapter 35 refuses it as noise, because a word that sometimes
+# means something and sometimes does not is how misreadings breed. `still` means
+# persistence; `already` meant nothing `has` did not.
+#
+# SECOND CORRECTION (2026-08-31, the lifetime rule): the lift scenario's expectation gains
+# `E still exists` -- the merge scenario said it, the lift forgot it, and a next-cycle claim
+# about an entry must say whether it survives, or the entry that REPLACED it could satisfy
+# the expectation. The checker found it; the author states it; the compiler never guesses.
+#
+# THE SIGIL RULE (2026-08-31, the user's ruling): the structural keywords -- the words
+# that give a sentence its shape -- are written with an @ sigil, so the skeleton is
+# visible and a typo fails as a keyword. Grammatical words stay plain English. The
+# sigils strip before desugaring: this change moved the generated core by ZERO bytes.
+#
+# An entry represents one cache line being fetched.
+# A demand may allocate a new entry or turn an existing prefetch entry
+# into a demand entry. A prefetch may reuse an existing entry.
+# A second demand for an already-demanded line stalls.
+
+disable iff (!resetN)
+
+
+# ----------------------------------------------------------------------
+# Environment
+# ----------------------------------------------------------------------
+
+@assume fillsAnswerFetches
+  @when fill F arrives
+  @then an inFlight entry with address F.address @must exist
+
+
+@assume memoryEventuallyAnswers
+  for @every entry E
+  @while E is inFlight
+  a fill for E.address @must @eventually arrive
+
+
+@assume requestHeldUntilTaken
+  @while request R is valid but not accepted
+  @next cycle R @must @still be valid and unchanged
+
+
+
+# ----------------------------------------------------------------------
+# Vocabulary
+# ----------------------------------------------------------------------
+
+@define joinable(E)
+  E is joinable @while it wantsFetch or is inFlight
+
+
+@define repeatDemand(R)
+  R is a repeatDemand @when
+    R is a demand
+    and a joinable demanding entry has R.address
+
+
+@state liveEntries : counter(0..depth)
+
+@define roomForDemand
+  there is roomForDemand @when liveEntries < depth
+
+
+@define roomForPrefetch
+  there is roomForPrefetch @when liveEntries < depth - demandReserve
+
+
+@state inFlightCount : counter(0..depth)
+
+@define fetchLimitAllows
+  fetchLimitAllows @when inFlightCount < maxOutstandingFetches
+
+
+@define eligible(E)
+  E is eligible @when
+    E wantsFetch
+    and either E is demanding
+        or no demanding entry wantsFetch
+
+
+
+# ----------------------------------------------------------------------
+# Requests
+# ----------------------------------------------------------------------
+
+@behavior allocateDemand
+  @when a valid demand request R arrives
+  and roomForDemand
+  and no joinable entry has R.address
+  @then
+    accept R
+    create entry E for address R.address with tag R.tag
+    @next cycle E is demanding and wantsFetch
+
+
+@behavior allocatePrefetch
+  @when a valid prefetch request R arrives
+  and roomForPrefetch
+  and no joinable entry has R.address
+  @then
+    accept R
+    create entry E for address R.address
+    @next cycle E wantsFetch
+
+
+@behavior liftPrefetchToDemand
+  @when a valid demand request R arrives
+  and a joinable non-demanding entry E has R.address
+  @then
+    accept R
+    @next cycle E is demanding
+    @next cycle E.tag is R.tag
+
+
+@behavior mergePrefetch
+  @when a valid prefetch request R arrives
+  and a joinable entry has R.address
+  @then
+    accept R
+    keep the existing entry
+
+
+@behavior stallRepeatDemand
+  @when a valid demand request R is a repeatDemand
+  @then
+    fetchStall is high
+    R is not accepted
+
+
+@behavior requestReady
+  a valid demand request R is ready @exactly @when
+    R is not a repeatDemand
+    and either a joinable entry has R.address
+        or roomForDemand
+
+  a valid prefetch request R is ready @exactly @when
+    either a joinable entry has R.address
+        or roomForPrefetch
+
+
+
+# ----------------------------------------------------------------------
+# Memory requests
+# ----------------------------------------------------------------------
+
+@behavior askMemory
+  @when fetchLimitAllows
+  and one or more eligible entries exist
+  @then
+    @choose one eligible entry E
+    drive memoryRequest with E.address
+
+  @choose fairly among eligible entries
+
+
+@behavior enquiryTaken
+  @when memoryRequest for address A is taken
+  @then
+    the entry E that wantsFetch for A
+    stops wanting a fetch @next cycle
+    and becomes inFlight @next cycle
+
+
+
+# ----------------------------------------------------------------------
+# Fills
+# ----------------------------------------------------------------------
+
+@behavior receiveFill
+  @when fill F arrives
+  @then
+    the inFlight entry E with F.address
+    becomes filled @next cycle
+    is no longer inFlight @next cycle
+    and remembers F.data as its lineData
+
+
+
+# ----------------------------------------------------------------------
+# Forwarding and completion
+# ----------------------------------------------------------------------
+
+@behavior forwardDemand
+  @when one or more filled demanding entries exist
+  @then
+    @choose @exactly one such entry E
+    send forward answering E
+      with tag E.tag
+      and data E.lineData
+    end E @next cycle
+
+  @choose fairly among filled demanding entries
+
+
+@behavior finishPrefetch
+  @when an entry E is filled and not demanding
+  @then
+    end E @next cycle
+
+
+@behavior redirect
+  @when redirect arrives
+  @then
+    @every demanding entry stops being demanding @next cycle
+
+
+
+# ----------------------------------------------------------------------
+# Properties
+# ----------------------------------------------------------------------
+
+@property demandForwardedAfterFill
+  @every filled demanding entry E
+  @must, @within the @next depth cycles,
+  be forwarded, stop demanding, or end
+
+
+@property entryPhasesDoNotOverlap
+  a live entry @must @never be in more than one of these states at @once:
+    wantsFetch
+    inFlight
+    filled
+
+
+@property fetchDoesNotRestart
+  @once a live entry stops wanting a fetch
+  it @must not want another fetch @before it ends
+
+
+@property forwardedEntryIsFreed
+  @when forward answers entry E
+  @then E @must be gone @next cycle
+
+
+@property forwardIsReal
+  @every forward @must answer @exactly one
+  filled demanding entry
+
+
+@property forwardIsCorrect
+  @when forward D answers entry E
+  @then
+    D.tag @must equal E.tag
+    and D.data @must equal E.lineData
+
+
+@property oneEntryPerLine
+  two different joinable entries
+  @must @never have the same address
+
+
+@property fetchIsReal
+  @when a memoryRequest for address A is taken
+  an entry that wantsFetch for A @must exist
+
+
+@property demandFirst
+  @while any demanding entry wantsFetch
+  @every memoryRequest presented @must belong to a demanding entry
+
+
+@property fetchLimitHeld
+  inFlightCount @must @never exceed maxOutstandingFetches
+
+
+@property neverOverfilled
+  liveEntries @must @never exceed depth
+
+
+@property demandAlwaysHasRoom
+  @when a non-repeat demand R is valid
+  and liveEntries <= depth - demandReserve
+  @then request @must be ready
+
+
+@property prefetchIsNeverForwarded
+  @every forwarded entry @must be demanding
+
+
+
+# ----------------------------------------------------------------------
+# Reset
+# ----------------------------------------------------------------------
+
+@property quietUnderReset
+  @during reset
+  memoryRequest @must not be valid
+  forward @must not be valid
+  fetchStall @must be low
+
+
+@property emptyUnderReset
+  @during reset
+  liveEntries @must be 0
+  inFlightCount @must be 0
+
+
+
+# ----------------------------------------------------------------------
+# Scenarios that must remain reachable
+# ----------------------------------------------------------------------
+
+@scenario demandLiftsAPrefetch
+  @given a joinable non-demanding entry E
+  @when a demand R for E.address arrives
+  @then @next cycle
+    E @still exists
+    and E is demanding
+    and E.tag equals R.tag
+
+
+@scenario prefetchMergesIntoDemand
+  @given a joinable demanding entry E
+  and no redirect
+  @when a prefetch R for E.address arrives
+  @then @next cycle
+    E @still exists
+    and E is @still demanding
+
+
+@scenario demandBeatsPrefetch
+  @given
+    a prefetch entry P wantsFetch
+    and a demanding entry D wantsFetch
+    and fetchLimitAllows
+  @then
+    memoryRequest @may present D.address
+    @before P.address
+
+
+@scenario prefetchRefusedAtReserve
+  @given liveEntries == depth - demandReserve
+  @when a prefetch R arrives and no joinable entry has R.address
+  @then R is not accepted
+
+
+@scenario repeatDemandStalls
+  @when a demand R arrives
+  and a joinable demanding entry has R.address
+  @then fetchStall is high

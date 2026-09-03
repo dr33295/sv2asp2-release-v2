@@ -1,0 +1,27 @@
+{
+  "refine": [
+    {
+      "design": "l1.lp",
+      "spec": "spec.lp",
+      "induct": 1,
+      "log": "certificate.log",
+      "contains": [
+        "live: OK",
+        "base: OK",
+        "no ghost state",
+        "INDUCTIVE at K=1",
+        "scenario push_at_wrap_edge: OK"
+      ]
+    }
+  ],
+  "roundtrips": [
+    {
+      "design": "l1.lp",
+      "scenario": "roundtrip_scenario.lp",
+      "icarus": true,
+      "contains": [
+        "ROUNDTRIP: OK"
+      ]
+    }
+  ]
+}

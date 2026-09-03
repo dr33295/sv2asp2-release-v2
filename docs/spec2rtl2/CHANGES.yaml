@@ -1,0 +1,701 @@
+# THE TOOL CHANGES LEDGER -- one entry per change to the tool, human- and machine-readable.
+#
+# Open entries are the worklist; fixed entries are the changelog; one file, two readings. A
+# gate (tests/test_aspfirst2.py::test_v2_changes_ledger) holds it honest: every `fixed` entry
+# names a gate pytest actually collects (a sweep row is cited as sweep:<row>), every entry has
+# a `why`, and `fixed-ungated` is allowed only as an admission the gate lists as OWED. The long
+# reasoning lives in the commit named and in LEARNINGS; this file points at it.
+#
+# status: open | fixed | fixed-ungated        found: field | corpus | review | bisection
+
+- id: G1
+  date: 2026-09-01
+  status: fixed
+  found: field, ve146 rung 3
+  what: enum members not in scope as values
+  why: an FSM phase is the natural enum; magic numbers throw away the names the route exists for
+  fix: a member lowers to itself, an ASP constant
+  gate: [test_v2_a_block_with_no_objects_and_no_opaque_ports]
+  docs: [skill, ROUTE_METHODOLOGY 35.3a]
+
+- id: G2
+  date: 2026-09-01
+  status: fixed
+  found: field, ve146 rung 3
+  what: a behaviour could not assign a scalar @state at the surface
+  why: the miss queue's every effect is on an object or a field; a block whose state IS a scalar FSM had no spelling
+  fix: "@next cycle <state> is <value> / = <expr>"
+  gate: [test_v2_a_block_with_no_objects_and_no_opaque_ports]
+  docs: [skill, ROUTE_METHODOLOGY 35.3a, grammar.ebnf]
+
+- id: G3
+  date: 2026-09-01
+  status: fixed
+  found: field, ve146 rung 3
+  what: "@during reset hardcoded the name resetN"
+  why: the worked example's spelling leaked into a rule; a block with a different reset name was refused
+  fix: the reset is read from the file's own disable iff line
+  gate: [test_v2_a_block_with_no_objects_and_no_opaque_ports]
+  docs: [skill]
+
+- id: G4
+  date: 2026-09-01
+  status: fixed
+  found: field, ve146 rung 3
+  what: "@index not a surface declaration"
+  why: a block needing N of something could not declare the domain in the authoring notation
+  fix: "@index <name> : <extent> accepted at the surface"
+  gate: [test_v2_a_block_with_no_objects_and_no_opaque_ports]
+  docs: [skill, grammar.ebnf]
+
+- id: G5
+  date: 2026-09-02
+  status: fixed
+  found: field, ve146 rounds 1 and 3
+  what: an undeclared index domain accepted silently -- as a subscript, then as a quantifier kind
+  why: a quantifier over an unknown kind reads as an OBJECT kind and asks for a window nothing mounts; every claim under it is vacuously true
+  fix: check.py `index` and `domain` rules; compile runs the checks
+  gate: [test_v2_a_block_with_no_objects_and_no_opaque_ports, test_v2_a_quantifier_ranges_over_a_declared_domain]
+  docs: [skill, ROUTE_METHODOLOGY 35.3a, LEARNINGS]
+
+- id: G6
+  date: 2026-09-01
+  status: fixed-ungated
+  found: field, ve146 verification
+  what: "@during reset emitted its guard twice"
+  why: idempotent in ASP, but the contract is meant to be read by a person
+  fix: enable iff emitted once
+  gate: []
+  docs: []
+
+- id: G7
+  date: 2026-09-02
+  status: fixed-ungated
+  found: field, ve146 round 2
+  what: the pointer relation next(P) collided with the @next sigil
+  why: methodology 10.1 documents next(P); the sigil rule rejected it before it could be read
+  fix: next(P) passes the sigil rule as a relation
+  gate: []
+  docs: [skill]
+
+- id: G8
+  date: 2026-09-02
+  status: fixed
+  found: field, ve146 rounds 2 and 3
+  what: "@every <kind> <VAR>: existed in @property only, then @behavior, then @scenario"
+  why: one construct reaching one declaration kind at a time; the third arrived as a KeyError
+  fix: the block opener in all three; a universal scenario discharged per position, never folded existentially
+  gate: [test_v2_a_behaviour_may_quantify_over_a_declared_domain, test_v2_a_scenario_may_quantify_over_a_declared_domain]
+  docs: [skill, ROUTE_METHODOLOGY 35.2, LEARNINGS]
+
+- id: G9
+  date: 2026-09-02
+  status: fixed
+  found: field, ve146 round 2
+  what: an effect read its sources at the target's instant
+  why: "##1 bitIndex = bitIndex + 1 became next's counter equals next's counter plus one -- unsatisfiable; a bare port was sampled a cycle late, a WRONG answer"
+  fix: target at T+1, every read at the event's instant, subscripts included
+  gate: [test_v2_an_effect_reads_its_sources_where_the_event_happened]
+  docs: [skill, ROUTE_METHODOLOGY 35.3a]
+
+- id: G10
+  date: 2026-09-02
+  status: fixed
+  found: field, ve146 round 2
+  what: a PORT could not be indexed; and then every port subscript was a bit
+  why: relating a multi-bit port to per-bit state is a block's central promise; then an array port needed element J, not bit J
+  fix: "out_byte[J] as a boundary bit(V, J); `elements` declared beside width decides element vs bit"
+  gate: [test_v2_a_port_may_be_indexed_and_a_domain_quantified, test_v2_an_array_port_is_indexed_by_element_not_by_bit]
+  docs: [skill, ROUTE_METHODOLOGY 8.0a, GETTING_STARTED]
+
+- id: G11
+  date: 2026-09-02
+  status: fixed
+  found: field, ve146 round 3
+  what: "@then @next cycle <cmp> a parser error in a @property, fine in a @scenario"
+  why: with G12 it left "after a reset cycle the phase is idle" with no sound spelling
+  fix: "|=> in the property paths; all consequents next-cycle or none"
+  gate: [test_v2_a_property_may_speak_of_the_next_cycle]
+  docs: [skill, ROUTE_METHODOLOGY 35.2]
+
+- id: G12
+  date: 2026-09-02
+  status: fixed
+  found: field, ve146 round 3
+  what: the reset exemption keyed to the @during spelling, not to naming the reset
+  why: the same requirement written @when reset == 1 compiled to a monitor needing reset both 0 and 1 -- dead, and counted
+  fix: the exemption follows the reset being NAMED, in behaviours too; a reset readable as a value
+  gate: [test_v2_the_reset_exemption_follows_the_meaning_not_the_spelling]
+  docs: [skill, ROUTE_METHODOLOGY 33, LEARNINGS]
+
+- id: G13
+  date: 2026-09-02
+  status: fixed
+  found: field, ve146 round 3
+  what: no frame monitor for a declared (non-object) window
+  why: the frame rule was object-shaped in three places; a block whose state is a phase, a counter and an array got none, and the certificate was green
+  fix: the frame keyed by the window's declared shape; the licence carries the position; only written windows framed
+  gate: [test_v2_a_declared_window_is_framed_whatever_its_shape, test_v2_a_frame_catches_the_position_it_did_not_license]
+  docs: [skill, ROUTE_METHODOLOGY 12.1, TRANSLATION, LEARNINGS]
+
+- id: G14
+  date: 2026-09-02
+  status: fixed
+  found: review, the user
+  what: nothing made a window single-valued
+  why: a claim asks whether SOME value matches, so a second value MASKS a violation; true in the corpus by accident
+  fix: a <window>NotSingleValued MONITOR (not a constraint -- a constraint reads as no counterexample)
+  gate: [test_v2_a_window_is_single_valued_and_it_is_checked]
+  docs: [skill, ROUTE_METHODOLOGY 12.0a, LEARNINGS]
+
+- id: G15
+  date: 2026-09-02
+  status: fixed
+  found: field, ve146 rung 4
+  what: the signature's reset fields consumed but not validated
+  why: polarity decides the sense of disable iff for every monitor; a near-miss was silently active-high -- a different specification that certifies
+  fix: every enumerated field refused by name; compile echoes the resolved sense; the methodology's own format corrected and RUN
+  gate: [test_v2_the_signature_refuses_an_out_of_domain_reset_field, test_v2_the_documented_signature_example_loads]
+  docs: [skill, ROUTE_METHODOLOGY 8, LEARNINGS]
+
+- id: G16
+  date: 2026-09-02
+  status: fixed
+  found: field, ve146 rung 4
+  what: "@every <domain> J: crashed a @scenario"
+  why: the third declaration kind, as a KeyError; and the existential fold would have meant "some position" under a name promising every position
+  fix: the block opener; a universal scenario reached only when NO position violates
+  gate: [test_v2_a_scenario_may_quantify_over_a_declared_domain]
+  docs: [skill, ROUTE_METHODOLOGY 35.2, LEARNINGS]
+
+- id: G17
+  date: 2026-09-02
+  status: fixed
+  found: field, ve146 rung 4
+  what: the bit-of-a-port boundary rule was UNSAFE; the contract did not ground; compile said it was fine
+  why: an unsafe rule stops grounding and takes the whole program with it
+  fix: the position bound in the boundary rule; compile GROUNDS what it emits
+  gate: [test_v2_a_bit_of_a_port_binds_its_position, test_v2_compile_grounds_what_it_emits]
+  docs: [skill, TRANSLATION 4.2, TOOL, LEARNINGS]
+
+- id: G18
+  date: 2026-09-02
+  status: fixed
+  found: field, ve146 rung 5
+  what: a module named with a leading capital could not be expressed
+  why: ASP reads it as a variable; the quoted escape leaked into the RTL and a filename; the workaround would print the wrong module name
+  fix: quotes unwrapped at intake, re-quoted on serialisation; the round trip uses the TRANSLATOR's convention on its side
+  gate: [test_v2_a_module_name_may_need_the_asp_escape]
+  docs: [schema gloss, skill, LEARNINGS]
+
+- id: F29
+  date: 2026-09-02
+  status: fixed
+  found: field, ve146 rung 7 (G19)
+  what: a 1-bit ternary continuous assign with a compound arm refused outright
+  why: the printer's own hold/set staging shape could be printed and not translated back
+  fix: "_bit_read delegates to _word_body: a 1-bit reg is a width-1 word"
+  gate: ["sweep:ternary_assign_with_a_compound_arm"]
+  docs: [notes/WORKLIST F29]
+  note: REMOVED A REFUSAL THAT WAS MASKING F30 -- landed without asking what the refusal was catching
+
+- id: G20
+  date: 2026-09-02
+  status: fixed
+  found: field, ve146 rung 7
+  what: a 1-bit net_lane could not be assigned to a same-width port; the workaround was a fake parameterisation
+  why: no word reading of a lane; the forced assembly chain baked its weights per element
+  fix: "pack(L) -- expanded for the solver, printed as the lane's name"
+  gate: [test_v2_pack_names_a_lane_as_one_word]
+  docs: [schema, skill, SUITE, LEARNINGS]
+
+- id: F30
+  date: 2026-09-02
+  status: fixed
+  found: bisection, ve146 round trip timeout
+  what: a temp hoisted out of a generate loses its genvar -- I unbound, lane reads as words -- and F29 made it silent
+  why: the emitter indexes a bare Ref only inside a lane rule; hoisting moved it out; the sibling guard is blind to the implicit form
+  fix: a temp hoisted inside a generate that reads a lane is a lane by construction, on every path (the F17 rule)
+  gate: ["sweep:generate_ternary_reading_lanes"]
+  docs: [notes/WORKLIST F30, LEARNINGS, AUTOMATION 4]
+
+- id: schema
+  date: 2026-09-02
+  status: fixed
+  found: review, the user
+  what: the ASP the tool accepts and emits was defined nowhere
+  why: a model writes the design and linkage and reads the contract in a schema it could only infer from one example
+  fix: sv2asp2 schema, derived from FACT_PREDS, CELLS and _ROLES
+  gate: [test_v2_the_schema_documents_what_the_tool_accepts_and_emits, test_v2_the_schema_covers_every_family_the_corpus_emits]
+  docs: [skill, SUITE, TOOL, GETTING_STARTED, AUTOMATION]
+
+- id: keywords
+  date: 2026-09-02
+  status: fixed
+  found: field, ve146
+  what: a cited command did not exist
+  why: a reader who types it and gets invalid choice stops trusting the page
+  fix: sv2asp2 keywords, from the grammar file's lists
+  gate: [test_v2_the_keywords_command_prints_the_vocabulary]
+  docs: [skill, ROUTE_METHODOLOGY 35]
+
+- id: print-parity
+  date: 2026-09-02
+  status: fixed
+  found: review, the user read the RTL
+  what: a module fake-parameterised in the PRINT passed the second-configuration certificate
+  why: that gate re-certifies the ASP; the property is of the printed RTL
+  fix: both configurations printed and required to differ only in the parameter defaults
+  gate: [test_v2_print_parity_catches_a_module_parametric_in_name_only]
+  docs: [skill, SUITE, AUTOMATION, LEARNINGS]
+
+- id: cnl-refusal
+  date: 2026-09-02
+  status: fixed-ungated
+  found: review, applying the G15 rule to the skill
+  what: a surface refusal reached compile as a traceback
+  why: a stack trace reads as a broken tool, not a sentence outside the language
+  fix: CnlError printed as PROBLEM, exit 1
+  gate: []
+  docs: [skill]
+
+- id: schema-operators
+  date: 2026-09-02
+  status: fixed
+  found: review, auditing the docs after pack
+  what: the printed schema listed facts and primitives and NO expression operators
+  why: a model writing def(x, ...) had the facts and the cells and not the vocabulary between them
+  fix: every operator with its argument order, from model.OPS, glosses gated for completeness and arity
+  gate: [test_v2_the_schema_documents_what_the_tool_accepts_and_emits]
+  docs: [skill, GETTING_STARTED, TOOL]
+
+- id: ledger-ships
+  date: 2026-09-02
+  status: fixed
+  found: review, verifying the pull from inside the tools folder
+  what: CHANGES.yaml was off the shipped-documents list while its commit said it ships
+  why: a claim in a document the artifact does not honour -- the class this ledger exists to end
+  fix: on the DOCS list; the shipping gate asserts it is present
+  gate: [test_v2_user_distribution_is_safe_to_ship]
+  docs: [CLAUDE.md]
+
+- id: G21
+  date: 2026-09-02
+  status: fixed
+  found: field, ve129 rung 7
+  what: enum_member printed a typedef named after the net; the SV did not compile
+  why: named states are the specification's own vocabulary; the block fell back to encodings in its RTL for want of a suffix
+  fix: arch_reg(N, enum(E)) accepted; the type prints as <net>_t; the reset prints as the member; the round trip maps a register carrying enum_member facts
+  gate: [test_v2_an_enum_type_is_named_apart_from_its_net]
+  docs: [skill, schema]
+
+- id: G22
+  date: 2026-09-02
+  status: fixed
+  found: field, ve129
+  what: an always-true property had no surface spelling; a tautological trigger was required
+  why: the core had `always` from the start and the surface reached it only inside a block
+  fix: "@always <condition>, the eighteenth structural keyword, top level and in the block"
+  gate: [test_v2_a_property_may_hold_always]
+  docs: [skill, grammar.ebnf, ROUTE_METHODOLOGY 35]
+
+- id: G26
+  date: 2026-09-02
+  status: fixed
+  found: field, ve144
+  what: a block with NO reset compiled to a contract in which nothing could ever fire; a false property was INDUCTIVE
+  why: live(T) was derived from the reset's release and, with no reset declared, from nothing; every monitor is guarded by it
+  fix: "no reset -> `live(T) :- gtime(T).`; and the runner refuses BY NAME when no instant can be live, before the base"
+  gate: [test_v2_reset_less_block_is_judged_at_every_instant]
+  docs: [ROUTE_METHODOLOGY 24, TOOL refine, SUITE A.2, GETTING_STARTED, WALKTHROUGH, skill, LEARNINGS]
+
+- id: G25
+  date: 2026-09-02
+  status: fixed
+  found: field, ve144
+  what: k bit-reads of one port in one claim grounded as 512^k; a 3x3 grid's neighbour count never finished
+  why: every read bound a FRESH sample of the port (val(q,Q,T), val(q,Q2,T), ...) -- equal in every model, joined by the grounder
+  fix: one sample variable per (port, instant) per declaration; the read literal still emitted per read, so hoisted rules stay safe
+  gate: [test_v2_port_reads_share_one_sample]
+  docs: [ROUTE_METHODOLOGY 26, TOOL dsl, SUITE A.9, LEARNINGS]
+
+- id: G24
+  date: 2026-09-02
+  status: fixed
+  found: field, ve144
+  what: "`expand` raised `cannot expand operator pack` -- the verb for reading a model refused the construct G20 added"
+  why: pack was expanded for the solver in compose only; expand had no case and no shared decision
+  fix: expand delegates to compose._expand_pack (one expansion), spelling members as the loaded design names them
+  gate: [test_v2_expand_handles_pack]
+  docs: [TOOL expand, SUITE A.2]
+
+- id: temp-dirs-outlive-run
+  date: 2026-09-02
+  status: fixed
+  found: review
+  what: the composed-design and contract temp directories were never removed (3,735 found in one user temp dir)
+  why: mkdtemp with no cleanup; the directory must survive the run (refine, roundtrip, export read it) but not the process
+  fix: atexit removal at both mkdtemp sites
+  gate: [test_v2_composed_temp_dir_does_not_outlive_the_run]
+  docs: []
+
+# ---- OPEN ----
+
+- id: F31
+  date: 2026-09-02
+  status: open
+  found: bisection, the first enum register through the v2 round trip
+  what: an enum-typed VALUE assigned to a plain `logic` register makes the translated register hold symbols on one path and numbers on another
+  why: "`st <= stM1` (a tag) and `st <= 2'd0` (a number) into `logic [1:0] st` -- a later `st == one` compares a symbol against a number and never matches, so the translation is WRONG (Icarus disagrees) at exit 0"
+  fix: ~  (the route's printer now avoids the shape by typing the register; hand-written SV still hits it)
+  gate: []
+  docs: [notes/WORKLIST.md]
+
+- id: refused-corpus-gate
+  date: 2026-09-02
+  status: open
+  found: bisection, F30
+  what: a change that reduces the refusal set must name each design it newly accepts
+  why: F29 removed a refusal that was masking F30 and every existing check passed
+  fix: ~
+  gate: []
+  docs: [LEARNINGS]
+
+- id: effect-surface
+  date: 2026-09-02
+  status: open
+  found: review
+  what: the controlled English's EFFECT shapes are described in grammar.ebnf and dispatched in code
+  why: the condition patterns are derived in both directions; the effect half can drift with no gate
+  fix: ~
+  gate: []
+  docs: [AUTOMATION 2d, SUITE A.7]
+
+- id: never-fired-report
+  date: 2026-09-02
+  status: open
+  found: field, G12
+  what: name every monitor in a compiled contract that no execution can satisfy
+  why: G12 produced monitors that were structurally dead while the count looked right
+  fix: ~
+  gate: []
+  docs: [AUTOMATION 2c, ROUTE_METHODOLOGY 33]
+
+- id: third-corpus-entry
+  date: 2026-09-02
+  status: open
+  found: review
+  what: a corpus entry with no objects
+  why: both committed blocks are object-shaped; a gate only discriminates against a shape its corpus contains
+  fix: ~
+  gate: []
+  docs: [AUTOMATION 2b]
+
+- id: word-bridge-budget
+  date: 2026-09-02
+  status: open
+  found: bisection
+  what: a wide word bridge should refuse with a number, not hang
+  why: a 2^64 join reads as a broken tool rather than as a cost
+  fix: ~
+  gate: []
+  docs: []
+
+- id: dist-egg-info
+  date: 2026-09-02
+  status: open
+  found: review
+  what: the distribution's .gitignore does not cover src/sv2asp.egg-info
+  why: a stale egg-info once carried outdated licence metadata
+  fix: ~
+  gate: []
+  docs: []
+
+- id: killed-run-leaves-solver
+  date: 2026-09-02
+  status: fixed
+  found: review
+  what: a run whose Python is killed from outside leaves its clingo child running and its temp files behind (9 orphaned solvers, 5 GB, one afternoon)
+  why: the runner's own timeout kills the child, but a parent killed by a signal cannot; clingo has `--time-limit`, which makes the solver stop on its own
+  fix: every solve in the certificate runner and the round trip passes clingo its own --time-limit
+  gate: [test_v2_roundtrip_solve_timeout_is_a_refusal]
+  docs: [LEARNINGS]
+
+- id: G27c
+  date: 2026-09-02
+  status: fixed
+  found: field, ve144
+  what: a multi-bit net_lane round-tripped WRONG (member 0 read as 0, member 1 as 1, for 2 and 5); silent until the comparison noticed
+  why: the print is `logic [N-1:0][W-1:0] x`, the translator models it as flat bits with `dims(x, packed(N), packed(W))`, and the harness read translated x(i) as member i -- it is bit i; the fix's first try then dropped silently because the reconstruction called an @func the design never used
+  fix: the projection reads member i from bits i*W..i*W+W-1 when the translator declares the packed shape, by plain arithmetic (no @func) up to 30 bits
+  gate: [test_v2_multi_bit_lane_round_trips_by_member]
+  docs: [TOOL roundtrip, SUITE A.2, LEARNINGS]
+
+- id: G27a
+  date: 2026-09-02
+  status: fixed
+  found: field, ve144
+  what: "a 1-bit ternary arm containing a comparison or logical op was refused as `word expr BinOp`, nested or not, in both modes (loud: DARK READ on the round trip)"
+  why: F29 sent a compound 1-bit arm to the WORD cascade, which knows arithmetic and bitwise operators and nothing of == or ||
+  fix: on the continuous-assign path and for hoisted temporaries, an arm containing a boolean node is hoisted to a named bit (the procedural path's treatment); pure word-op arms stay on F29's path, corpus byte-identical
+  gate: ["sweep:ternary_assign_with_a_boolean_arm", "sweep:nested_ternary_with_a_boolean_arm"]
+  docs: [SUITE A.10, LEARNINGS]
+
+- id: G27b
+  date: 2026-09-02
+  status: fixed
+  found: field, ve144
+  what: the round trip ended in an uncaught subprocess.TimeoutExpired traceback on the 256-cell grid
+  why: both solve functions ran clingo with a timeout and never caught the expiry
+  fix: a TIMEOUT status with the limit in its message, clingo self-bounded; and an Icarus compile failure now carries the compiler's own words instead of "simulator absent or did not compile"
+  gate: [test_v2_roundtrip_solve_timeout_is_a_refusal]
+  docs: [TOOL roundtrip, SUITE A.2]
+
+- id: G28
+  date: 2026-09-02
+  status: fixed
+  found: field, ve144
+  what: a regular relation (a torus) could only be written with LITERAL offsets and wrap blocks, baking one size into a module that claims a parameter; a parenthesised index and a parameter name in an index were "unreadable"
+  why: the block-wrap index existed (version 1's Life is eight def_lane lines) but nothing shipped documented it, and the hand-written index parser took only numbers
+  fix: the offset and the wrap block may each name a parameter (resolved to unroll, printed as the localparam, no residue baked from one size), redundant parentheses read as the index; the idiom documented in the methodology, the schema and the skill; the bench no longer declares a register-less design's clk twice
+  gate: [test_v2_lane_index_may_name_a_parameter]
+  docs: [ROUTE_METHODOLOGY 27, schema, skill, TOOL load, SUITE A.4, LEARNINGS]
+
+- id: lane-index-family
+  date: 2026-09-03
+  status: open
+  found: design, ve144
+  what: "the index forms a REGULAR RELATION still needs after multi-axis lanes: a stride `a*I + b` and an exclusive-or with a constant (the butterfly pair); division, modulus by the side and the row base were linearisation artefacts and are gone with lanes-nd; a runtime index stays OUT (a mux beside mrd, not wiring)"
+  why: every form has three readers -- the loader unrolls it, the printer renders it, the translator must ROLL it back as a lane term -- so a form is admitted only with all three and a two-size round-trip gate
+  fix: ~
+  gate: []
+  docs: [ROUTE_METHODOLOGY 27.3]
+  order: not before a block needs a butterfly; the translator's roll first, one evaluator and one renderer, then the block
+
+- id: F32
+  date: 2026-09-03
+  status: fixed
+  found: field, ve144 (the reporter's unrolled grid at side 3)
+  what: "the bits->word bridge of a per-bit signal is ONE rule joining every bit: 2^N ground instances whenever the bits are free at grounding (a register-derived signal under a symbolic power-on); a 36-bit count array never finished, a 20-bit probe was killed at 120 s with 1.1 M instances -- and the bridge was emitted for every indexed signal whether or not anything read the word"
+  why: "the cost is dynamic, not static: a concrete power-on with pinned inputs determines every bit and grounds the same rule in one instance (goldschmidt_cds's 32-bit q_tilde), so a static refusal would have been wrong -- the first cut refused it and broke that example"
+  fix: "above a budget (2^20): a word no rule of the design reads is NOT assembled and a constant slice/bit select reads its bits (2^w, not 2^N); a word some rule reads is assembled with its cost named as a WARNING; a port's word is always assembled (read from outside); the decision reads the emitted rules at each mode's finalisation (flat writes the bridge before its comb rules, modular after) so both modes agree by construction; the per-bit facts ride on the shape map and the ctx's used-set (Fix-42: first-class data, no new argument through 44 call sites). On the way: modular's rule builder RECORDED problems and warnings and never RETURNED them -- flat counted them, modular did not (the two-emitter split); now returned and merged"
+  gate: [test_f32_word_bridge_budget, "sweep:packed_2d_constant_element_select_above_budget"]
+  docs: [TOOL, SUITE A.10, LEARNINGS, JOURNAL]
+  note: "the budget is per RULE; the single-valuedness check joins a word's candidates PAIRWISE, so an assembled 16-bit word under a free power-on is already 2^32 there -- a lower budget (about 10 bits) is the refinement to consider, recorded rather than applied because it would touch many corpus artifacts for no semantic change; and scripts/scenario_budget.py does not count a free power-on as free (see scenario-budget-xinit)"
+
+- id: F33
+  date: 2026-09-03
+  status: open
+  found: probe, while gating F32
+  what: "SILENT WRONG, both modes, exit 0: a per-bit register whose D-input concat has a boolean bit (`g <= rst ? 0 : {g[2:0], a[0] ^ g[3]}`) gets that bit's rule for value 1 only -- `val(t0(0), 1, T) :- ..., V4 != 0, ...` and no rule for 0 -- so when the XOR is 0 the bit has no value, the register goes dark, and the shift carries the hole up one bit per cycle; Icarus says z=1 where the model says nothing (read as 0)"
+  why: the per-bit D-input path emits a word-expression bit as its true polarity and never its complement (stage3_emit ~1618-1634, the `{vt} != 0` rules); the comb bit path has the excluded-middle complement, the register D path does not
+  fix: ~
+  gate: []
+  docs: []
+  note: "reproduction: the F32 sweep row with `a[0] ^ g[5]` as the shifted-in bit; the row was rewritten without the XOR so F32 could land -- F33 gets its own Icarus-arbitrated row when fixed"
+
+- id: scenario-budget-xinit
+  date: 2026-09-03
+  status: open
+  found: probe, while gating F32
+  what: "scripts/scenario_budget.py reports 'free inputs: none' with `__xinit.lp` (the symbolic power-on) in the file set -- the power-on choices are not counted as free, so the dynamic refusal misses exactly the case in which an assembled word explodes"
+  why: the budget reads free signals off the scenario's choice rules and does not recognise the power-on companion's
+  fix: ~
+  gate: []
+  docs: []
+
+- id: proof-ledger-unsynced
+  date: 2026-09-03
+  status: open
+  found: gate, while verifying F32
+  what: "`test_proof_coverage_ledger` fails: nine feature rows added to docs/reference/SV_FEATURE_COVERAGE.md on 2026-08-20 (the F21/F25/F26 array resets, the runtime bit-write, the x/z literal readings, ...) have no entry in proofs/PROOF_COVERAGE.md, last synced 2026-08-16"
+  why: the proof ledger enumerates its obligations from the coverage document and each new row needs `proof_ledger.py --sync` and a classification; the F-list landed without it, and the translate/aspfirst2 suites do not run this gate
+  fix: ~
+  gate: []
+  docs: []
+  note: pre-existing (the committed ledger never listed them); the twelve drift/table checks beside it pass after F32, so the bridge tables did not move
+
+- id: lanes-nd
+  date: 2026-09-03
+  status: fixed
+  found: "design, ve144 (the user's ruling: a grid is two axes, not one index)"
+  what: "a lane may have more than one axis: `net_lane(g, (side, side), 1)` has members `g(r, c)` row-major, `def_lane(y, (R, C), e)` binds one variable per axis, and each axis wraps on its own -- `q(R - 1 \\ side, C)`; the print is `logic [SIDE-1:0][SIDE-1:0]` with nested generate loops; `pack` flattens row-major"
+  why: "linearising a grid onto one index put row-major order into every neighbour expression, where every reader had to reverse it (the three-operator wrap, the row base), and hid the locality the grounder and the induction need inside arithmetic the grounder enumerates; per axis, a position is a term and a rule over `g(R, C)` is one rule at every cell"
+  fix: "one reader and one writer of a lane reference's text (`lanes.py`: four regexes and the loader's writer folded into it, first, byte-identical); a parenthesised comma list is a tuple in the term parser; `LaneTable.axes` beside the unchanged (N, w, dir) table; per-axis reference, wrap and window in the loader; the printer's multi-axis declaration, reference and nested generate; the round trip's multi-index members. On the way: the bench spelled a member `y(0, 0)` with a space and its output lines matched nothing -- and the run said `agrees on all 0` (now a failure by name)"
+  gate: [test_v2_lanes_have_axes]
+  docs: [ROUTE_METHODOLOGY 27.3 + 34.6, schema, skill, TOOL, SUITE A.4, LEARNINGS, JOURNAL]
+  note: "the sequential half landed the same day (lanes-nd-seq); the controlled-English half (windows keyed by several kinds, quantifiers over them) and the Conway block rewritten in two dimensions are the next slice"
+
+- id: F34
+  date: 2026-09-03
+  status: fixed
+  found: probe, the 2-D torus's round trip
+  what: "modular emitted an UNSAFE rule for a nested-generate lane target (`val(up(I, J), ..)` with I and J bound by nothing) where flat bound both"
+  why: the modular call into the comb emitter did not pass the packed extents the domain helper needs for a multi-level target (the two-emitter split, one keyword argument)
+  fix: passed
+  gate: ["sweep:nested_generate_computed_index_on_a_2d_packed_port"]
+  docs: []
+
+- id: F35
+  date: 2026-09-03
+  status: fixed
+  found: probe, the 2-D torus's round trip
+  what: "a nested select with a genvar-dependent index on a packed 2-D port (`q[((r+2)%3)][c]`) was a slice of a slice of the WORD -- which a member-pinning scenario never supplies (the internal lanes read nothing) and which is the F32 wall at 256 cells"
+  why: F27 made a computed genvar index a lane read for ONE level; the nested chain fell to the word path
+  fix: "`ElemSel` carries the further indices (`more`); the frontend lowers the chain on a packed multi-D root with a genvar in an index to a multi-level lane read and marks the root a lane with one level per packed dimension; the emitter renders every index; the one-index sites refuse a multi-level select by name"
+  gate: ["sweep:nested_generate_computed_index_on_a_2d_packed_port", test_v2_lanes_have_axes]
+  docs: []
+
+- id: F36
+  date: 2026-09-03
+  status: fixed
+  found: probe, the 2-D torus's pack
+  what: "a plain vector copied from a two-level lane (`assign w = ul;`) was pulled into the lane form by closure as nine ONE-level lanes: `val(w(I), V, T) :- val(ul(I, J), V, T)`, every w(I) three-valued, the modular program UNSAT"
+  why: the lane closure compared widths only; a member whose lanes have a different number of index levels than its peers' cannot be a lane peer, its own left-hand side included
+  fix: the closure rejects a rank mismatch before the LHS exemption; the copy is then the word of the assembled lane
+  gate: [test_v2_lanes_have_axes]
+  docs: []
+
+- id: lanes-nd-seq
+  date: 2026-09-03
+  status: fixed
+  found: "field, ve144 (every combinational 2-D construct checked out; inst_lane(_, ff, (n, n)) crashed on the tuple's tag -- and a grid that cannot hold state is not a grid)"
+  what: "`inst_lane(u, cell, (n, n))` takes the dimension list: instances `u(r, c)` row-major, a lane pin joins member to member, the printer nests one loop per axis and instantiates the cell once (`g[i][j] <= gM1[i][j]`); `arch_reg` with a dimension list is refused by name (a register array is a lane of registers); a dimension list where a number belongs is refused by name in the evaluator"
+  why: the count went through the parameter evaluator as one integer, and the pin mapping, the printer's instance generate and the evaluator each had one axis in mind
+  fix: "the loader's instance lane carries axes (`Design.inst_axes`), the pin map is per member with a rank check, compose refuses a multi-axis instance lane across a module boundary for now; Conway's Life at side 3 (eight per-axis wraps, the count, the rule, the grid in the flop lane, the load path) round-trips against Icarus, the print identical at side 4"
+  gate: [test_v2_lane_instances_have_axes]
+  docs: [ROUTE_METHODOLOGY 27.3, schema, skill, TOOL, SUITE A.4, JOURNAL]
+
+- id: F37
+  date: 2026-09-03
+  status: open
+  found: probe, the Life design's rule
+  what: "a one-bit lane def whose expression is an OR of compares -- `logor(eq(nc(I), 3), logand(eq(nc(I), 2), g(I)))`, the natural spelling of Life's rule -- is refused as `word expr BinOp`; in ONE axis too, so it predates the axes"
+  why: the lane comb path emits AND-of-compares (Path C) and ternaries with boolean arms (G27a), but an OR tree over lane-word compares reaches the word cascade
+  fix: ~
+  gate: []
+  docs: []
+  note: "the rule written as nested ternaries (`ite(eq(nc, 3), 1, ite(eq(nc, 2), g, 0))`) translates and round-trips today"
+
+- id: F38
+  date: 2026-09-03
+  status: fixed
+  found: probe, the 4x4 flop bank's round trip
+  what: "a register written in a NESTED generate has atoms g(I, J), and its power-on companion (init0 and the symbolic xinit) spelled it flat -- `g(L), L = 0..15` -- atoms no rule reads, so the bank was dark from T=0 in both modes"
+  why: the power-on walk's extent helper knew array-of-instance domains and element widths, not a nested-generate register's packed dimensions
+  fix: a register whose lanes have more than one level takes its packed dimensions per level (`g(L1, L2)`), in the per-bit and the lane branch of the walk
+  gate: ["sweep:register_bank_in_a_nested_generate", test_v2_lane_instances_have_axes]
+  docs: []
+  note: "the sweep row is a 3x2 bank because under the exact-X sweep a 16-bit assembled word is the single-valuedness pair join (2^32) -- the F32 budget note, met again"
+
+- id: F39
+  date: 2026-09-03
+  status: fixed
+  found: probe, the register bank under random stimulus
+  what: "a genvar select whose variables are not the nesting-order prefix was lowered to a bare Ref and rendered in the enclosing rule's own index order: `a[c]` under `for (r) for (c)` read `a(I)`, the ROW, so the bank took the wrong input at exit 0; `a[j][i]` was the same defect, refused as a transpose"
+  why: the shortcut "a select by the in-scope genvar is this lane's own position" assumed the outermost genvar
+  fix: a select carries each genvar's own position as an explicit lane select (`ElemSel` with `more`); the transpose translates and moved from the refusal sweep to the Icarus sweep
+  gate: ["sweep:register_bank_in_a_nested_generate", "sweep:transpose_in_a_nested_generate"]
+  docs: []
+
+- id: G30
+  date: 2026-09-03
+  status: fixed
+  found: field, ve144
+  what: "a design with 2-D state and neighbour logic could not read a FLAT wide input port per cell: bit/slc took a literal position only, and no reshape bridged a flat port to a lane -- while the contract, compiled from the flat signature, reads data[C]; every avenue ended in a named refusal, so the grid's load path needed per-cell unrolling"
+  why: the position argument's check predates lanes with loop variables; the printer and the translator already handled a symbolic position (`data[r*SIDE + c]` reads back as a lane read at a computed position, F27)
+  fix: "inside a lane def the position of bit/slc may name the def's own loop variables (`bit(data, add(mul(R, side), C))`): the unroll substitutes their values and the parameter folding makes a number, the rolled form prints `data[((r*SIDE)+c)]`; a variable that is not the def's is refused by name; the port stays flat, so the contract's reading is unchanged"
+  gate: [test_v2_bit_position_over_the_loop_variables]
+  docs: [schema, ROUTE_METHODOLOGY 27.3, SUITE A.4, JOURNAL]
+  note: the reshape operator (pack's inverse) is the same thing in disguise and can be sugar later
+
+- id: sweep-flake-prio-enc
+  date: 2026-09-03
+  status: fixed
+  found: suite, two of three full runs
+  what: "`test_idiom_sweep_random_stimulus[prio_enc_first_wins]` failed in two of three full translate runs with idx = 7 (LAST-wins) where Icarus says 4 or 2, at different instants, and never in isolation, under ten hash seeds, or in any subset of the suite"
+  why: "F40: the always_comb executor memoised a scan accumulator's hoisted Cond by id(v) and kept no reference to v; once the Cond died, a new Cond allocated at the same address got the OLD tern, so `!any` read a stale value -- a defect that depends on allocation history, which a full run has and an isolated run does not"
+  fix: the memo retains the object it keys and checks identity on a hit (F40); the emitter's fallback expression key is by value, not by address
+  gate: [test_f40_accumulator_memo_retains_its_object]
+  docs: [WORKLIST, JOURNAL, LEARNINGS]
+
+- id: F40
+  date: 2026-09-03
+  status: fixed
+  found: suite, the sweep row prio_enc_first_wins in full runs only
+  what: "SILENT WRONG, nondeterministic: a priority encoder written as an always_comb scan (`if (req[i] && !any) ...`) sometimes translated as LAST-wins in both modes at exit 0"
+  why: "the executor's accumulator memo was keyed by id(v) without retaining v: a dead Cond's address reused by a new Cond returned the old tern, so `!any` read a stale accumulator; reproducible only when allocation history made the addresses collide -- two of three full runs, never in isolation"
+  fix: the memo keeps (v, tern) and checks `hit[0] is v`; the emitter's `_expr_key` fallback is by value
+  gate: [test_f40_accumulator_memo_retains_its_object]
+  docs: [WORKLIST, JOURNAL, LEARNINGS]
+  note: "the commit bf63201's message claimed the isolated translate run green; it had this one failure -- the corrective commit states it"
+
+- id: release-v2-skill
+  date: 2026-09-03
+  status: fixed
+  found: "user request: a skill starting directly from spec.lp like version 2, for the released tool"
+  what: "`/release-v2`: the direct-ASP operating procedure for the released tool -- the contract by hand in the schema's vocabulary, then the linkage, the design (lanes with axes, the grid idioms), the manifest-driven certificate, the print and the round trip, the runner's messages read line by line; ships in the distribution beside the DSL skill, with the FIFO (a hand-written contract) as its example"
+  why: the DSL skill assumes the controlled-English front end, and a person writing spec.lp by hand had only the older v2 skill, which predates the ladder verbs, the certificate manifest, lanes with axes and the runner's newer messages
+  fix: skills/release-v2/SKILL.md; build_dist ships it and the FIFO; the shipping gate asserts both
+  gate: [test_v2_user_distribution_is_safe_to_ship]
+  docs: [CLAUDE.md doc map]
+
+- id: ladder-optional-rungs
+  date: 2026-09-03
+  status: open
+  found: "writing the release-v2 skill"
+  what: "the ladder's seven rungs are fixed: a direct-ASP entry has no controlled English, yet its `dsl` rung must still be explained and approved to reach `contract`"
+  why: the ladder was built for the two-file front end; a rung that does not apply should be declarable as such, recorded rather than forged
+  fix: ~
+  gate: []
+  docs: [skill release-v2]
+
+- id: release-v2-mit-license
+  date: 2026-09-03
+  status: fixed
+  found: "user decision: the v2 release is MIT, the author kept, a copy of the licence required in future works"
+  what: "the release-v2 bundle ships under MIT (dist_assets/LICENSE.mit, copyright Dhananjay Raju); `build_dist.py --license mit` selects it, the default and the distribution line stay proprietary"
+  why: the licence is a property of the shipped bundle, not the repository; MIT's own notice clause is what obliges a future work to carry the licence and the author's name, so the text is used verbatim -- any strengthening would make it something other than MIT
+  fix: "LICENSES table + --license flag in scripts/build_dist.py; the gate asserts the default bundle is still proprietary and the MIT bundle is MIT with the name"
+  gate: [test_v2_user_distribution_is_safe_to_ship]
+  docs: [notes/MAINTAINER.md, CLAUDE.md]
+
+- id: fifo-certificate-manifest
+  date: 2026-09-03
+  status: fixed
+  found: "recipient check of the release-v2 folder: `sv2asp2 certificate examples/spec2rtl2/fifo` answered `FAIL no verify.json here`"
+  what: "the FIFO entry, named by the /release-v2 skill as its hand-written-contract example, had no verify.json -- its certificate had only ever been run by direct command"
+  why: the skill sends a reader to the certificate verb on this entry; an example the documented command refuses teaches the wrong lesson on the first try
+  fix: "examples/spec2rtl2/fifo/verify.json (induction at K=1 with the verdict lines, the Icarus round trip; no second point, the entry is not parametric) and its committed certificate.log"
+  gate: [test_v2_fifo_certificate_manifest]
+  docs: [skill release-v2]
+
+- id: setup-python314
+  date: 2026-09-03
+  status: fixed
+  found: "recipient check of the release-v2 folder under a system-ordered PATH"
+  what: "setup.sh tried python3.13/3.12/3.11 by name and then plain python3; a machine whose plain python3 is Apple's 3.9 and whose only newer Python is Homebrew's python3.14 was refused with 'No Python 3.11 or newer was found'"
+  why: the list was written before 3.14 existed on the machines it runs on; the refusal looked like a missing installation
+  fix: python3.14 first in the candidate list
+  gate: [test_v2_user_distribution_is_safe_to_ship]
+  docs: []
+
+- id: release-v2-public
+  date: 2026-09-03
+  status: fixed-ungated
+  found: "user decision: make the v2 release public"
+  what: "the release-v2 bundle is published as its own PUBLIC repository (its address is in notes/MAINTAINER.md, which does not ship) -- the orphan commit alone, one commit, no history; the private repository stays private and unreferenced by the bundle"
+  why: a branch is not an access boundary -- anyone who can clone the private repository obtains every branch and the whole history, so publishing means a separate repository (notes/MAINTAINER.md)
+  fix: "gh repo create --public; git push public release-v2:main from the local release folder; the pre-push grep for the private repository's name recorded as the procedure"
+  gate: []
+  docs: [notes/MAINTAINER.md, CLAUDE.md]
+
+- id: verilator-arbiter
+  date: 2026-09-03
+  status: fixed
+  found: "user requirement: some companies only have Verilator, so the round trip must work correctly with it -- and prefer it"
+  what: "the round trip arbitrates with Verilator (--verilator, --sim auto: Verilator first, else Icarus; manifest key `simulator`); doctor and setup.sh accept either simulator and miss only their joint absence"
+  why: "Verilator is 2-state: an unreset flop reads 0 where Icarus prints x, so a bare swap of the compile command would compare power-on garbage against the model's zeros and agree for no reason; the two-fill rule (compile once, run under the all-zeros and the all-ones power-on fills, a sample definite only where both agree) is the 2-state stand-in for x, approximate in one direction only (q^q on unreset q is x in 4-state, 0 under both fills)"
+  fix: "roundtrip.py: SIMULATORS order, sim_available/resolve_sim, _verilator_runs + _parse_out + the fill merge, the report names the rule; __main__ --verilator/--sim and the doctor's arbiter row; flow.py `simulator`; setup.sh"
+  gate: [test_v2_simulator_order_is_verilator_first, test_v2_round_trip_under_verilator_two_fill_rule, test_v2_round_trip_probe_agrees_under_icarus_too, test_v2_fifo_round_trips_under_verilator, test_v2_manifest_accepts_simulator_key]
+  docs: [ROUTE_METHODOLOGY 27.5, SUITE A.10/B.1/C.1, TOOL.md, GETTING_STARTED, AUTOMATION, skills release-v2 + spec2rtl-dsl]

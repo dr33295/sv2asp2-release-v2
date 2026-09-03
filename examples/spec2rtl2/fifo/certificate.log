@@ -1,0 +1,17 @@
+refine: l1.lp  spec spec.lp  NO STIMULUS (v2 certificate path: base from reset with free inputs + the step, window K=1)
+  lint: OK; abstract: 0 net(s)
+  live: OK -- some instant is judged within the base window (the monitors can fire)
+  base: OK -- from reset, no property can fire on ANY input sequence within 1 live step(s)
+  induct K=1: state freed at T=0: write_pointer(3), read_pointer(3); cells storage[4x8]; inputs free every instant: push data_push pop; reset held released: reset_n
+  induct: no ghost state (no history predicate in the monitors)
+  induct: reset-exempt monitor(s) NOT EXERCISED in this step (reset held released, so they can never fire here): ['reset_wrong'] -- run the induction with --free-reset to bind them
+  induct: property set -- bad ['empty_wrong', 'full_wrong', 'valid_wrong', 'pointer_push_wrong', 'pointer_pop_wrong', 'push_landed_wrong', 'cell_disturbed', 'pop_value_wrong']; environment (assumed at every instant): []
+  induct: INDUCTIVE at K=1 -- ['empty_wrong', 'full_wrong', 'valid_wrong', 'pointer_push_wrong', 'pointer_pop_wrong', 'push_landed_wrong', 'cell_disturbed', 'pop_value_wrong']: with the base, they hold for ALL time (inputs free every instant; reset released after T=0)
+  scenario push_when_full: OK -- is_full+do_push is possible, and the natural operation (push_refused) cannot be violated
+  scenario pop_when_full: OK -- is_full+do_pop is possible, and the natural operation (pop_served_and_room) cannot be violated
+  scenario push_when_empty: OK -- is_empty+do_push is possible, and the natural operation (push_accepted_and_nonempty) cannot be violated
+  scenario pop_when_empty: OK -- is_empty+do_pop is possible, and the natural operation (pop_refused) cannot be violated
+  scenario one_entry_pop: OK -- is_one+do_pop is possible, and the natural operation (pop_served_and_empty) cannot be violated
+  scenario push_and_pop_mid: OK -- is_mid+do_both is possible, and the natural operation (both_happen) cannot be violated
+  scenario push_at_wrap_edge: OK -- is_wrapedge+do_push is possible, and the natural operation (push_accepted_and_wrapped) cannot be violated
+REFINE: OK
