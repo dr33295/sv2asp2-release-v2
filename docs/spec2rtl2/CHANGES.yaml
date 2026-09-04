@@ -812,3 +812,43 @@
   gate: [sweep:booth_digit_bits_from_compares]
   docs: [docs/reference/SV_FEATURE_COVERAGE.md]
 
+- id: generate-local-in-conditional-branch
+  date: 2026-09-04
+  status: fixed
+  found: "the third report's second UPDATE at 4b06844: the sole remaining cause, `<net> is a plain net written inside a for-generate from a value that depends on the loop index` -- reconstructed as a net declared inside a generate `if` WITHIN the loop (probe r9), per-iteration by the language"
+  what: "a declaration inside a nested generate block dispatched within a loop run is registered as a lane by construction exactly as a direct declaration is (one helper, _register_gen_local, for both); a module-level net written every iteration stays refused by name (probe r10, a multi-driver)"
+  why: "the registration lived in the loop over the run's direct members only; the safety net introduced for F47 then refused the legal shape with a message that read as the user's fault"
+  fix: "_modules.py _register_gen_local; the GenerateBlock dispatch registers before dispatching"
+  gate: [sweep:generate_local_in_a_conditional_branch]
+  docs: []
+
+- id: lane-target-marked-by-lane-read
+  date: 2026-09-04
+  status: fixed
+  found: "the conditional-branch row's VALUES: `enc[i] = bi ^ 5` with `bi` a generate-local was emitted as a broadcast WORD rule over the local's whole 12-bit word -- wrong on every lane but the first, at exit 0; the direct-local form (probe r7) had translated clean earlier with no value check"
+  what: "a lane target is marked per-lane when its lowered right-hand side reads a lane by construction, not only when the source text names the genvar"
+  why: "the marking was syntactic (`_expr_uses_genvar` on the pyslang text); a right-hand side that reads only a generate-local never names the genvar and was taken for a broadcast"
+  fix: "_modules.py _lower_assign_one: _has_implicit_lane_ref on the lowered RHS"
+  gate: [sweep:generate_local_read_by_a_lane_whose_text_names_no_genvar, sweep:generate_local_in_a_conditional_branch]
+  docs: []
+
+- id: generate-local-index-is-in-element
+  date: 2026-09-04
+  status: fixed
+  found: "the same row's `hi[i] = bi[2] & flip[i]`: `bi[2]` on the generate-local was read as LANE MEMBER 2 -- another iteration's value -- wrong on the lanes where the two differ, at exit 0"
+  what: "an index on a generate-local reaches inside THIS iteration's element, never across lanes: its lane axis is the iteration, not a declared dimension"
+  why: "the element-select branch returned a lane member for any name in lane_dims; a lane by construction is in lane_dims too, but its declared type has no lane dimension"
+  fix: "_exprs.py ElementSelect branch: `name not in self._gen_locals`"
+  gate: [sweep:generate_local_in_a_conditional_branch]
+  docs: []
+
+- id: lane-ternary-selector
+  date: 2026-09-04
+  status: open
+  found: "writing the conditional-branch row: `enc[i] = flip[i] ? ~bi : bi` (a lane target, a lane-bit selector, a generate-local in the arms) is refused `ternary with unsupported selector for enc` (probe r11)"
+  what: "a ternary on a lane target whose selector is a lane bit and whose arms read a generate-local is refused"
+  why: "not reduced further today; the row was rewritten around it so the local-net fix could be witnessed on its own"
+  fix: ~
+  gate: []
+  docs: []
+

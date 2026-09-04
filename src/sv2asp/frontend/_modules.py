@@ -17,7 +17,7 @@ from ..ir.nodes import (
 )
 from ..ir.types import ElementType, IRType, Kind
 from ._common import _BINOP, _enum_name
-from ._exprs import _mentions_laneidx
+from ._exprs import _has_implicit_lane_ref, _mentions_laneidx
 
 
 @dataclass
@@ -292,6 +292,8 @@ class _ModuleMixin:
                                     m, "generate", flagged)
             elif k == "GenerateBlock" and not getattr(m, "isUninstantiated", False):
                 for sub in m:        # if/case-generate: inline only the TAKEN branch (elaborated)
+                    if self._genvars:      # inside a loop run: a declaration here is a lane too
+                        self._register_gen_local(sub, self._lane_hi, flagged)
                     _dispatch(sub)
             elif k == "UninstantiatedDef":   # a cell with NO module definition -- but it may be a
                 cell = getattr(m, "definitionName", None) or "?"   # library PRIMITIVE (ACME_FF, VCMUX,
@@ -745,6 +747,15 @@ class _ModuleMixin:
                 self._note_lane_elem_w(base, lane_w or getattr(getattr(left, "type", None),
                                                                "bitWidth", 1) or 1)
             rhs_expr = self._lower_expr(a.right, top=True)
+            if base not in self._lane_dims and _has_implicit_lane_ref(rhs_expr, self._lane_dims):
+                # the RHS names no genvar in the TEXT but reads a lane BY CONSTRUCTION -- a
+                # generate-local net (`enc[i] = bi ^ 5` with `logic [2:0] bi` declared in the
+                # body): the target is per-lane all the same. Left a broadcast word, the rule
+                # read the local's whole 12-bit WORD and every lane but the first was wrong
+                # at exit 0 (the Icarus row caught it; the third report's last cause, 2026-09-04)
+                self._lane_dims[base] = max(self._lane_dims.get(base, 0), dims)
+                self._note_lane_elem_w(base, lane_w or getattr(getattr(left, "type", None),
+                                                               "bitWidth", 1) or 1)
             return [CombItem(lhs=base, rhs=rhs_expr, loc=loc, lane_hi=self._lane_hi,
                              lane_lo=self._lane_lo, lane_step=self._lane_step, lane_off=lane_off)]
         if (self._genvars and _enum_name(left.kind) == "NamedValue"
@@ -1548,6 +1559,28 @@ class _ModuleMixin:
             self._lower_generate_run(arr, e0, genvar if has_lane else None, lo, hi, step,
                                      dispatch, flagged)
 
+    def _register_gen_local(self, mm, hi: int, flagged: list) -> None:
+        """A net/variable DECLARED inside a for-generate body -- directly, or inside a generate
+        `if` branch within it (the special-cased first partial product of a Booth array, a
+        field report, 2026-09-04) -- is per-iteration in SV: a LANE of the loop's extent by
+        construction (F17). One registration for both places, so a declaration in a
+        conditional branch is not left a module-level word that the safety net then refuses."""
+        if _enum_name(mm.kind) not in ("Variable", "Net"):
+            return
+        t = getattr(mm, "type", None)
+        if (getattr(t, "isUnpackedArray", False) or getattr(t, "isStruct", False)
+                or getattr(t, "isUnion", False) or getattr(t, "isEnum", False)):
+            flagged.append((self._loc(mm), f"{mm.name}: an array/struct/union/enum declared "
+                            f"inside a for-generate body (deferred -- declare it at module "
+                            f"level, indexed by the genvar)"))
+        elif len(self._genvars) > 1:
+            flagged.append((self._loc(mm), f"{mm.name}: a declaration inside a NESTED "
+                            f"for-generate body (deferred -- declare it at module level)"))
+        else:
+            self._lane_dims[mm.name] = max(self._lane_dims.get(mm.name, 0), 1)
+            self._note_lane_elem_w(mm.name, getattr(t, "bitWidth", 1) or 1)
+            self._gen_locals[mm.name] = max(self._gen_locals.get(mm.name, 0), hi)
+
     def _lower_generate_run(self, arr, e0, genvar: str | None, lo: int, hi: int, step: int,
                             dispatch, flagged: list) -> None:
         """Lower ONE representative generate entry ``e0`` with ``genvar`` in scope as the lane
@@ -1574,20 +1607,8 @@ class _ModuleMixin:
                     dispatch(mm)
                     # a net/variable DECLARED in this generate body is per-iteration: a LANE of the
                     # loop's extent by construction (see the module epilogue for the width)
-                    if genvar and _enum_name(mm.kind) in ("Variable", "Net"):
-                        t = getattr(mm, "type", None)
-                        if (getattr(t, "isUnpackedArray", False) or getattr(t, "isStruct", False)
-                                or getattr(t, "isUnion", False) or getattr(t, "isEnum", False)):
-                            flagged.append((self._loc(mm), f"{mm.name}: an array/struct/union/enum declared "
-                                            f"inside a for-generate body (deferred -- declare it at module "
-                                            f"level, indexed by the genvar)"))
-                        elif len(self._genvars) > 1:
-                            flagged.append((self._loc(mm), f"{mm.name}: a declaration inside a NESTED "
-                                            f"for-generate body (deferred -- declare it at module level)"))
-                        else:
-                            self._lane_dims[mm.name] = max(self._lane_dims.get(mm.name, 0), 1)
-                            self._note_lane_elem_w(mm.name, getattr(t, "bitWidth", 1) or 1)
-                            self._gen_locals[mm.name] = max(self._gen_locals.get(mm.name, 0), hi)
+                    if genvar:
+                        self._register_gen_local(mm, hi, flagged)
             # VALUE-USE of the genvar (defect D1). Lane-rolling lowers one entry and fans the index,
             # which is only sound when the body is index-INVARIANT apart from the indices it selects
             # with. A genvar used as a VALUE (`a + i`, `a[i*8 +: 8]`, `(i == 0) ? …`) is a Parameter

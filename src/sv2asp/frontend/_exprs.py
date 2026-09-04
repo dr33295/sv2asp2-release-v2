@@ -1418,7 +1418,12 @@ class _ExprMixin:
                     self._lane_dims[name] = max(self._lane_dims.get(name, 0), 1)
                     self._note_lane_elem_w(name, ew)
                     return ElemSel(name, idx)
-                if name in self._lane_dims:      # a genuine lane/INDEXED signal -> per-lane read
+                if name in self._lane_dims and name not in self._gen_locals:
+                    # a genuine lane/INDEXED signal -> per-lane read. NOT a generate-LOCAL: its
+                    # lane axis is the ITERATION, so an index on it (`bi[2]` with `logic [2:0]
+                    # bi` declared in the body) reaches inside THIS iteration's element -- taken
+                    # as lane member 2 it read another iteration's value (a silent wrong the
+                    # Icarus row caught; the third report's last cause, 2026-09-04)
                     return ElemSel(name, idx)
                 # F27: a COMPUTED genvar index (`q[(i+240) % 256]`, the toroid's wrap) is a lane
                 # read like its affine sibling above -- WHATEVER the arithmetic. It used to fall
