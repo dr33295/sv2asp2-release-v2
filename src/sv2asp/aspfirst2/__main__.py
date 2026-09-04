@@ -8,35 +8,8 @@ import sys
 
 
 def _toolchain() -> list:
-    """What the tool actually resolved, the way it resolves it -- the first question any
-    diagnosis asks, and the one users answer least reliably from memory."""
-    import shutil
-    out = [f"python           {sys.version.split()[0]}  ({sys.executable})"]
-    try:
-        from ..config import load as _cfg
-        cfg = _cfg()
-    except Exception:
-        cfg = None
-    for tool, probe in (("clingo", ["--version"]), ("verilator", ["--version"]), ("iverilog", ["-V"]), ("lean", ["--version"])):
-        path = None
-        if cfg is not None:
-            try:
-                path = cfg.tool(tool)
-            except Exception:
-                path = None
-        path = path or shutil.which(tool)
-        if not path:
-            out.append(f"{tool:16} NOT FOUND")
-            continue
-        try:
-            v = subprocess.run([path, *probe], capture_output=True, text=True, timeout=8)
-            first = (v.stdout or v.stderr).splitlines()[0] if (v.stdout or v.stderr) else "?"
-        except subprocess.TimeoutExpired:
-            first = "(present, but did not answer --version in 8s)"
-        except Exception as e:
-            first = f"(could not run: {type(e).__name__})"
-        out.append(f"{tool:16} {first}   ({path})")
-    return out
+    from ..issue_report import toolchain_lines
+    return toolchain_lines()
 
 
 def _run_reported(a, argv) -> int:
@@ -60,26 +33,8 @@ def _run_reported(a, argv) -> int:
         rc = 1
     text = buf.getvalue()
     sys.stdout.write(text)
-    try:
-        import importlib.metadata as _md
-        ver = _md.version("sv2asp")
-    except Exception:
-        try:
-            from .. import __version__ as ver
-        except Exception:
-            ver = "unknown"
-    lines = ["# sv2asp2 issue report",
-             "# Send this file to the maintainer, with a MINIMISED probe if you can make",
-             "# one. It carries the environment and the tool's own output -- not your design.",
-             "",
-             f"when             {datetime.datetime.now().isoformat(timespec='seconds')}",
-             f"tool version     {ver}",
-             f"command          {' '.join(argv or sys.argv[1:])}",
-             f"exit status      {rc}",
-             "", "## toolchain", *_toolchain(),
-             "", "## output", text.rstrip() or "(no output)"]
-    pathlib.Path(a.report).write_text("\n".join(lines) + "\n")
-    print(f"\nissue report written to {a.report}", file=sys.stderr)
+    from ..issue_report import write_issue_report
+    write_issue_report(a.report, tool="sv2asp2", argv=list(argv or sys.argv[1:]), rc=rc, text=text)
     return rc
 
 

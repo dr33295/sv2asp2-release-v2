@@ -16,7 +16,7 @@ from ..ir.nodes import (
     MemWrite, MuxItem, Param, Reset, SeqItem, Signal, VffItem,
 )
 from ..ir.types import ElementType, IRType, Kind
-from ._common import _enum_name
+from ._common import _BINOP, _enum_name
 
 
 @dataclass
@@ -43,6 +43,10 @@ class LowerCtx:
     flagged: list = field(default_factory=list)
 
 
+class _NotAffine(Exception):
+    """A slice bound that is not an affine expression over the lane index."""
+
+
 class _ModuleMixin:
     """_ModuleMixin: modules methods of PyslangFrontend (split out from the monolith)."""
 
@@ -63,6 +67,7 @@ class _ModuleMixin:
         saved_lanes, self._lane_dims = self._lane_dims, {}
         saved_elemw, self._lane_elem_w = self._lane_elem_w, {}
         saved_gl, self._gen_locals = self._gen_locals, {}                 # per module (the F15 lesson)
+        saved_lf, self._lane_fields = self._lane_fields, {}                # lane fields, per module too
         saved_rlr, self._reg_lane_range = self._reg_lane_range, {}   # per module (the F15 lesson)
         saved_ifp, self._iface_ports = self._iface_ports, set()
         saved_domains, self._lane_domains = self._lane_domains, {}
@@ -308,6 +313,7 @@ class _ModuleMixin:
         self._assemble_clocked_slices(seq, reg_names, flagged)    # RMW slice writes, merged across blocks
         self._assemble_prim_flop_slices(seq, reg_names, flagged)  # coalesce per-bit primitive flops
         self._assemble_partials(comb, flagged)   # reconstruct words written via slice-writes
+        self._assemble_lane_fields(comb, flagged)  # one lane definition per word stitched from affine fields
 
         # mark registers
         signals = {
@@ -332,6 +338,7 @@ class _ModuleMixin:
         lane_dims_local, self._lane_dims = self._lane_dims, saved_lanes
         lane_elemw_local, self._lane_elem_w = self._lane_elem_w, saved_elemw
         self._gen_locals = saved_gl
+        self._lane_fields = saved_lf
         self._reg_lane_range = saved_rlr
         self._iface_ports = saved_ifp
         lane_domains_local, self._lane_domains = self._lane_domains, saved_domains
@@ -453,13 +460,194 @@ class _ModuleMixin:
             los.append(lo)
         return his, los
 
+    # ------------------------------------------------------------------ lane FIELDS
+    # A generate write whose target is a FIELD of a lane's word at a position that may move
+    # with the genvar -- `pp[i][((i-1)*2)+2 +: 65]`, the way every Booth partial-product array
+    # is stitched (a field report, 2026-09-03) -- and, the same machinery, a constant field
+    # `y[i][3:0]`. Each field is recorded; at the module epilogue the fields of one word are
+    # checked DISJOINT and COVERING over the loop's own range (a numeric check: the range is
+    # elaboration-constant) and composed into ONE lane definition, the word being the OR of
+    # every field masked and shifted to its position, the position an expression over the
+    # lane index the emitter renders as the rule's own `I`. A field whose WIDTH moves with
+    # the genvar is accepted in one form only: a single bit replicated to exactly fill it
+    # (`{(61-((i-1)*2)){s[i]}}`, the sign extension), which is the bit gating a fill mask.
+
+    def _lane_field_target(self, left):
+        """`(base, lo_ir, hi_ir, w, wtot)` if `left` is `base[gv][<range>]` on a packed 2-D
+        signal with both bounds affine in the in-scope genvar (constants included); `w` is the
+        field width when it is the same for every iteration, else None. None if not this shape."""
+        if not self._genvars or _enum_name(getattr(left, "kind", None) or "") != "RangeSelect":
+            return None
+        inner = self._peel(left.value)
+        if _enum_name(inner.kind) != "ElementSelect":
+            return None
+        gs = self._genvar_select_dims(inner)
+        if gs is None or gs[1] != 1:
+            return None
+        base = self._select_root(inner)
+        if base is None or getattr(getattr(base, "type", None), "isUnpackedArray", False):
+            return None
+        wtot = getattr(getattr(inner, "type", None), "bitWidth", None)
+        if not wtot:
+            return None
+        sk = getattr(getattr(left, "selectionKind", None), "name", "Simple")
+        try:
+            if sk == "IndexedUp":
+                w = self._const_of(left.right)
+                if w is None:
+                    return None
+                lo = self._affine_ir(left.left)
+                hi = BinOp("add", lo, Const(w - 1, 32), 32)
+            elif sk == "IndexedDown":
+                w = self._const_of(left.right)
+                if w is None:
+                    return None
+                hi = self._affine_ir(left.left)
+                lo = BinOp("sub", hi, Const(w - 1, 32), 32)
+            else:
+                hi, lo = self._affine_ir(left.left), self._affine_ir(left.right)
+                ws = {self._eval_affine(hi, i) - self._eval_affine(lo, i) + 1 for i in self._lane_range()}
+                w = ws.pop() if len(ws) == 1 else None
+        except _NotAffine:
+            return None
+        return gs[0], lo, hi, w, wtot
+
+    def _affine_ir(self, e):
+        """The bound `e` as IR over the lane index: Const, LaneIdx, and add/sub/mul of those.
+        Anything else raises _NotAffine (the caller then leaves the target to the refusal)."""
+        cv = self._const_of(e)
+        if cv is not None and not self._expr_uses_genvar(e):
+            return Const(cv, 32)
+        p = self._peel(e)
+        k = _enum_name(p.kind)
+        if k == "NamedValue" and p.symbol.name in self._genvars and p.symbol.name in self._genvar_order:
+            return LaneIdx(self._genvar_order.index(p.symbol.name))
+        if k == "BinaryOp" and _BINOP.get(_enum_name(p.op)) in ("add", "sub", "mul"):
+            return BinOp(_BINOP[_enum_name(p.op)], self._affine_ir(p.left), self._affine_ir(p.right), 32)
+        raise _NotAffine(str(getattr(p, "syntax", "")))
+
+    @staticmethod
+    def _eval_affine(ir, i: int) -> int:
+        if isinstance(ir, Const):
+            return ir.value
+        if isinstance(ir, LaneIdx):
+            return i
+        if isinstance(ir, BinOp):
+            a, b = _ModuleMixin._eval_affine(ir.left, i), _ModuleMixin._eval_affine(ir.right, i)
+            return {"add": a + b, "sub": a - b, "mul": a * b}[ir.op]
+        raise _NotAffine(repr(ir))
+
+    def _lane_range(self):
+        return range(self._lane_lo, self._lane_hi, self._lane_step or 1)
+
+    def _record_lane_field(self, lf, right, loc) -> None:
+        base, lo, hi, w, wtot = lf
+        if w is not None:
+            val = self._lower_expr(right, top=True)
+            field = BinOp("shl", BinOp("and", val, Const((1 << w) - 1, wtot), wtot), lo, wtot)
+        else:
+            # a width that moves with the genvar: a CONSTANT fill (`'0`, `'1`) or ONE bit
+            # replicated to exactly fill [hi:lo] (the sign extension)
+            r = self._peel(right)
+            unit = None
+            cv = self._const_of(r) if not self._expr_uses_genvar(r) else None
+            if cv is not None:
+                one = Const(1, wtot)
+                fill = BinOp("sub", BinOp("shl", one, BinOp("add", hi, Const(1, 32), 32), wtot),
+                             BinOp("shl", one, lo, wtot), wtot)
+                if cv == 0:
+                    field = Const(0, wtot)
+                elif cv == (1 << (getattr(getattr(r, "type", None), "bitWidth", 0) or 0)) - 1:
+                    field = fill
+                else:
+                    raise NotImplementedError(
+                        f"lane field `{base}[i][hi:lo]` whose WIDTH moves with the genvar holds the constant "
+                        f"{cv}: only all-zeros or all-ones fills a moving width")
+                rec = (lo, hi, w, field, loc, (self._lane_lo, self._lane_hi, self._lane_step or 1), wtot)
+                self._lane_fields.setdefault(base, []).append(rec)
+                return
+            if _enum_name(r.kind) == "Replication":
+                u = r.concat
+                if _enum_name(u.kind) == "Concatenation" and len(list(u.operands)) == 1:
+                    u = list(u.operands)[0]
+                u = self._peel(u)
+                if (getattr(getattr(u, "type", None), "bitWidth", None) or 0) == 1:
+                    try:
+                        cnt = self._affine_ir(r.count)
+                        if all(self._eval_affine(cnt, i) == self._eval_affine(hi, i) - self._eval_affine(lo, i) + 1
+                               for i in self._lane_range()):
+                            unit = self._lower_expr(u, top=True)
+                    except _NotAffine:
+                        unit = None
+            if unit is None:
+                raise NotImplementedError(
+                    f"lane field `{base}[i][hi:lo]` whose WIDTH moves with the genvar: only a single bit "
+                    f"replicated to exactly fill the field is lowered (the sign-extension shape); this "
+                    f"value is not that")
+            one = Const(1, wtot)
+            fill = BinOp("sub", BinOp("shl", one, BinOp("add", hi, Const(1, 32), 32), wtot),
+                         BinOp("shl", one, lo, wtot), wtot)
+            # the fill GATED by the bit: fill * bit (the bit is 0 or 1), which the word cascade
+            # computes exactly at the word width -- a Cond inside arithmetic is what it refuses
+            field = BinOp("mul", fill, unit, wtot)
+        rec = (lo, hi, w, field, loc, (self._lane_lo, self._lane_hi, self._lane_step or 1), wtot)
+        self._lane_fields.setdefault(base, []).append(rec)
+
+    def _assemble_lane_fields(self, comb, flagged) -> None:
+        for base, recs in self._lane_fields.items():
+            ranges = {r[5] for r in recs}
+            wtots = {r[6] for r in recs}
+            loc = recs[0][4]
+            if len(ranges) != 1 or len(wtots) != 1:
+                flagged.append((loc, f"{base}: lane fields written from generates with different ranges"))
+                continue
+            (lo_i, hi_i, step), wtot = ranges.pop(), wtots.pop()
+            bad = None
+            for i in range(lo_i, hi_i, step):
+                covered = [0] * wtot
+                for lo, hi, w, _f, l, _r, _w in recs:
+                    a, b = self._eval_affine(lo, i), self._eval_affine(hi, i)
+                    if a < 0 or b >= wtot or b < a:
+                        bad = f"iteration {i}: field [{b}:{a}] is outside the {wtot}-bit word"
+                        break
+                    for k in range(a, b + 1):
+                        if covered[k]:
+                            bad = f"iteration {i}: bit {k} is written by two fields"
+                            break
+                        covered[k] = 1
+                    if bad:
+                        break
+                if bad:
+                    break
+                if not all(covered):
+                    bad = f"iteration {i}: bit(s) {[k for k, c in enumerate(covered) if not c][:6]} are written by no field"
+                    break
+            if bad:
+                flagged.append((loc, f"{base}: the lane fields must be disjoint and cover the word -- {bad}"))
+                continue
+            rhs = recs[0][3]
+            for r in recs[1:]:
+                rhs = BinOp("or", rhs, r[3], wtot)
+            self._lane_dims[base] = max(self._lane_dims.get(base, 0), 1)
+            self._note_lane_elem_w(base, wtot)
+            comb.append(CombItem(lhs=base, rhs=rhs, loc=loc, lane_hi=hi_i, lane_lo=lo_i, lane_step=step))
+        self._lane_fields = {}
+
     def _lower_assign_one(self, a, left, loc, writes):
+        lf = self._lane_field_target(left)
+        if lf is not None:
+            # a FIELD of a lane's word at a position that may move with the genvar
+            # (`pp[i][((i-1)*2)+2 +: 65]`): recorded now, composed into ONE lane definition per
+            # word at the module epilogue (`_assemble_lane_fields`)
+            self._record_lane_field(lf, a.right, loc)
+            return []
         if self._lhs_index_uses_genvar_arith(left):
             raise NotImplementedError(
-                f"write target index uses the genvar arithmetically "
-                f"(`{str(getattr(left, 'syntax', '')).strip()}`): only a bare `sig[i]` lane-rolls; "
-                f"an arithmetic index would fold to one iteration (deferred -- shift the range "
-                f"and index with the bare genvar, or unroll explicitly)")
+                f"write target index uses the genvar arithmetically, in a form that is not lowered "
+                f"(`{str(getattr(left, 'syntax', '')).strip()}`): a bare `sig[i]` lane-rolls, and a "
+                f"field of a lane's word at an AFFINE position (`sig[i][a*i+b +: W]`, `[hi:lo]` with "
+                f"both bounds affine, or constants) composes; anything else would fold to one "
+                f"iteration (deferred -- index with the bare genvar, or unroll explicitly)")
         # a per-lane write y[gv]...[gv] inside a generate nest: drop the indices, record # of dims.
         # `y[i*W +: W]` (the byte-lane idiom) is the same write with W-bit lanes.
         gs = self._genvar_select_dims(left)
@@ -1865,7 +2053,36 @@ class _ModuleMixin:
             e = conns[pin].expression
             if _enum_name(e.kind) == "Assignment":
                 e = e.left
-            return self._peel(e).symbol.name
+            p = self._peel(e)
+            if not hasattr(p, "symbol"):
+                # a connection that is not a plain net -- a replication, a concatenation, an
+                # expression. Named, so it is a refusal a person can act on and not a Python
+                # AttributeError leaking out of the guard (a field report, 2026-09-03: a
+                # vectored flop's `.En({4{opvld}})` crashed instead of refusing)
+                raise NotImplementedError(
+                    f"{spec.category} {inst.name}: pin {pin} is connected to a {_enum_name(p.kind)} "
+                    f"(`{str(getattr(p, 'syntax', '')).strip()}`), not a plain net -- assign the "
+                    f"expression to a wire first and connect the wire")
+            return p.symbol.name
+
+        def broadcast_enable(pin: str, lanes: int) -> "str | None":
+            """`.En({N{x}})` with N the lane count and x a 1-bit net: ONE enable for every lane.
+            Returns x's name, or None when the connection is anything else."""
+            e = conns[pin].expression
+            if _enum_name(e.kind) != "Replication":
+                return None
+            if (self._const_of(e.count) or 0) != lanes:
+                return None
+            unit = e.concat                      # pyslang wraps the replicated operand(s) in a Concatenation
+            if _enum_name(unit.kind) == "Concatenation":
+                ops = list(unit.operands)
+                if len(ops) != 1:
+                    return None
+                unit = ops[0]
+            unit = self._peel(unit)
+            if not hasattr(unit, "symbol") or (getattr(getattr(unit, "type", None), "bitWidth", None) or 0) != 1:
+                return None
+            return unit.symbol.name
 
         def actual_expr(pin: str) -> Expr:
             return self._lower_expr(conns[pin].expression)
@@ -1920,17 +2137,21 @@ class _ModuleMixin:
             width = (params.get(spec.width_param, 1) if spec.width_param else 1) or 1
             q = actual_name(spec.pins["q"])
             d = actual_name(spec.pins["d"])
-            en = actual_name(spec.pins["en"])
+            en_bc = broadcast_enable(spec.pins["en"], lanes)      # `.En({N{x}})`: one net for all lanes
+            en = en_bc if en_bc is not None else actual_name(spec.pins["en"])
             reg_names.add(q)
             # functor lane: ONE lane axis q(I) regardless of width -- the per-lane value keeps its
             # own shape (a bit at width 1, the whole W-bit WORD at width>1), so word arithmetic on a
-            # lane works. The enable is per-lane too. width is carried for the lane_shape marker.
+            # lane works. The enable is per-lane too -- unless it is a broadcast, which is the
+            # scalar it names. width is carried for the lane_shape marker.
             self._lane_dims[q] = self._lane_dims[d] = 1
-            self._lane_dims.setdefault(en, 1)
+            if en_bc is None:
+                self._lane_dims.setdefault(en, 1)
+                self._lane_elem_w.setdefault(en, 1)
             self._lane_elem_w[q] = self._lane_elem_w[d] = width   # per-lane bit width (for the word bridge)
-            self._lane_elem_w.setdefault(en, 1)
             vffs.append(VffItem(q=q, d=d, en=en, clock=actual_name(spec.pins["clk"]),
-                                lanes=lanes, inst=inst.name, loc=loc, width=width))
+                                lanes=lanes, inst=inst.name, loc=loc, width=width,
+                                en_lane=en_bc is None))
             add_cell(q)
             return
         if spec.category == "latch":

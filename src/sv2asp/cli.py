@@ -48,11 +48,49 @@ def main(argv: list[str] | None = None) -> int:
     no construct to report -- the construct the tool would see never existed. Exit 2 (distinct
     from 1, an unsupported/unaccounted construct) and print slang's own message, which names
     the file and column."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    report = _report_path(args)
+    if report is None:
+        try:
+            return _main(args)
+        except SvSourceError as e:
+            sys.stderr.write(f"REFUSED: {e}\n")
+            return 2
+    # `--report FILE` (2026-09-04): the run with its output captured, then the issue report
+    # beside the verdict -- the environment and the tool's own words, never the design. The
+    # v2 verbs had it; the translator did not, and a field reporter assembled the header by hand.
+    import contextlib
+    import io
+    buf = io.StringIO()
+    rc = 1
     try:
-        return _main(argv)
-    except SvSourceError as e:
-        sys.stderr.write(f"REFUSED: {e}\n")
-        return 2
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            try:
+                rc = _main(args)
+            except SvSourceError as e:
+                sys.stderr.write(f"REFUSED: {e}\n")
+                rc = 2
+    except SystemExit as e:
+        rc = int(e.code or 0)
+    except Exception:
+        import traceback
+        traceback.print_exc(file=buf)
+        rc = 1
+    text = buf.getvalue()
+    sys.stdout.write(text)
+    from .issue_report import write_issue_report
+    write_issue_report(report, tool="sv2asp", argv=args, rc=rc, text=text)
+    return rc
+
+
+def _report_path(args: list) -> "str | None":
+    """The value of `--report FILE` / `--report=FILE` in args, or None."""
+    for k, a in enumerate(args):
+        if a == "--report" and k + 1 < len(args):
+            return args[k + 1]
+        if a.startswith("--report="):
+            return a[len("--report="):]
+    return None
 
 
 def _main(argv: list[str] | None = None) -> int:
@@ -136,6 +174,9 @@ def _main(argv: list[str] | None = None) -> int:
                          "latch is transparent while enabled, i.e. a combinational path rather "
                          "than a register, and is usually instantiated by mistake. Latches are "
                          "never INFERRED regardless of this flag.")
+    ap.add_argument("--report", default=None, metavar="FILE",
+                    help="write an issue report (tool version, toolchain, command, exit status, output "
+                         "-- never the design) to FILE, for the maintainer")
     ap.add_argument("--log", default=None, metavar="FILE",
                     help="write a REPORT of the run (every problem and warning, with the "
                          "verdict) to FILE. stderr scrolls away and is easy to miss in a "

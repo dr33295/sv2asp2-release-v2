@@ -266,6 +266,9 @@ class VffItem:
     inst: str
     loc: Loc
     width: int = 1   # per-lane bit width; >1 -> the per-lane value V is a W-bit word (lane_shape marker)
+    #: False when the enable is ONE net broadcast to every lane (`.En({N{x}})`): the capture
+    #: rule reads `val(x, 1, T)` instead of `val(en(I), 1, T)`, and `en` is not a lane (2026-09-04)
+    en_lane: bool = True
 
 
 @dataclass(frozen=True)

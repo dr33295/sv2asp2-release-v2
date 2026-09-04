@@ -81,6 +81,7 @@ class PyslangFrontend(_TypesMixin, _ExprMixin, _StmtMixin, _ModuleMixin):
         self._loop_lane_stack: list[tuple[str, tuple[int, int | None, int] | None]] = []  # loop nest: (var, (lo, excl hi, step))
         self._lane_mem_writes = 0             # # lane-rolled mem writes in the current loop body (>1=flag)
         self._lane_dims: dict[str, int] = {}  # sig accessed as sig[gv]...[gv] -> # of lane indices
+        self._lane_fields: dict = {}          # base -> fields of its lane word (affine positions), per module
         self._gen_locals: dict[str, int] = {}  # a net/variable DECLARED inside a for-generate -> the loop's extent (per module)
         self._lane_elem_w: dict[str, int] = {}   # lane sig -> per-lane element bit width (1 = bit-vector)
         self._lane_domains: dict[str, tuple] = {}  # array-instance lane owner -> per-dim lane counts (ni[,nj])

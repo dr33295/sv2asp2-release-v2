@@ -721,3 +721,23 @@
   docs: [ROUTE_METHODOLOGY 27.1 convention 4, TOOL.md]
   note: "the Conway FIELD design's print still does not round-trip, before and after this change alike: its gM1 line hits F30 (a ternary arm hoisted inside a nested generate loses a genvar -- `c2(I)` reading `nc(I, J)`), the recorded open translator defect; that is the next item"
 
+- id: translator-report-flag
+  date: 2026-09-04
+  status: fixed
+  found: "field report (2026-09-03): the reporter assembled the issue-report header by hand because `sv2asp` (the translator's CLI) had no --report; only the sv2asp2 verbs did"
+  what: "`sv2asp ... --report FILE` writes the same report the route's verbs write: tool version, toolchain, command, exit status, output -- never the design"
+  why: "the report is the channel a recipient has for a gap; a channel that exists on half the entry points is documented as if it existed on all of them"
+  fix: "src/sv2asp/issue_report.py (the writer and the toolchain probe, moved out of the v2 main and shared); cli.main pre-scans --report and runs under capture"
+  gate: [test_translator_cli_writes_issue_report]
+  docs: [docs/guide/SV2ASP_USAGE.md]
+
+- id: lane-fields-affine
+  date: 2026-09-04
+  status: fixed
+  found: "field report (2026-09-03) from a Booth partial-product generator: the generate loop stitching each partial product's sign extension, core and zero pad into a 128-bit lane at a position derived from the genvar was refused (`write target index uses the genvar arithmetically`); a constant field `y[i][3:0]` was refused under the same message"
+  what: "a field of a lane's word at an affine position (`sig[i][a*i+b +: W]`, `[hi:lo]` with both bounds affine, constants) is lowered: the fields of one word compose into one lane definition, masked and shifted to positions the rule computes from I; disjointness and coverage checked numerically over the loop's range; a moving-width field takes a fill or one replicated bit"
+  why: "the position is a regular relation in the index (the lane-index-family item, now with a real block); the emitter already renders a lane index used as a value, so the composition is a frontend construction with no new rule shape; anything the check cannot prove disjoint and covering stays a named refusal"
+  fix: "_modules.py: _lane_field_target/_affine_ir/_eval_affine/_record_lane_field/_assemble_lane_fields, per-module _lane_fields; the refusal message names what is and is not lowered"
+  gate: [sweep:lane_fields_at_affine_positions, sweep:lane_fields_constant_parts, test_lane_fields_are_checked_disjoint_and_covering, test_lane_fields_compose_exactly_at_128_bits]
+  docs: [docs/reference/SV_FEATURE_COVERAGE.md, docs/reference/SV_TRANSLATION_CATALOG.md 4.6]
+

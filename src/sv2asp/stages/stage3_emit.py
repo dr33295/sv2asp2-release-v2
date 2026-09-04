@@ -2967,7 +2967,9 @@ def _emit_vff(item, out: _Out) -> None:
     bit-select into a lane know its width)."""
     out.construct(_prov(item.loc, f"vff {item.inst} -> {item.q}  ({item.lanes} lanes x {item.width} bits)"))
     clk = item.clock
-    q, d, en = _lane_term(item.q, "I"), _lane_term(item.d, "I"), _lane_term(item.en, "I")
+    q, d = _lane_term(item.q, "I"), _lane_term(item.d, "I")
+    # a BROADCAST enable (`.En({N{x}})`) is the one net x, read as a scalar by every lane
+    en = _lane_term(item.en, "I") if getattr(item, "en_lane", True) else item.en
     out.rule(f"lane({item.inst}, 0..{item.lanes - 1})")
     if item.width > 1:   # self-describing: q is a lane signal of N lanes, each a W-bit word
         out.rule(f"lane_shape({item.q}, lanes({item.lanes}), width({item.width}))")
@@ -3992,8 +3994,8 @@ def emit(design: Design, analysis: Analysis, *, k: int = 8, style: str = "v1",
     lane_elem_w = dict(design.lane_elem_w)                      # lane signal -> per-lane element width
     lane_signals = list(design.lane_signals)                   # signals with a per-lane form (+ bitvec)
     for v in design.vffs:                                       # VFF ports are single-index lanes
-        for name in (v.en, v.d, v.q):
-            lane_dims.setdefault(name, 1)
+        for name in ((v.en,) if getattr(v, "en_lane", True) else ()) + (v.d, v.q):
+            lane_dims.setdefault(name, 1)                        # a broadcast enable is a scalar, not a lane
     # --bitvec: fold the per-bit signals into the LOCAL lane bookkeeping (design stays frozen). Each
     # chosen signal becomes a 1-wide-lane signal, so the existing lane<->word bridge (assemble the word
     # for arithmetic/compare consumers) and per-lane rules apply with no new bridge code.
