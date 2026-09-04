@@ -54,6 +54,10 @@ def _has_bool_node(e: Expr) -> bool:
     return False
 
 
+class _NotAffineRead(Exception):
+    """The window read must fold, not lower symbolically."""
+
+
 class _ExprMixin:
     """_ExprMixin: exprs methods of PyslangFrontend (split out from the monolith)."""
 
@@ -693,6 +697,11 @@ class _ExprMixin:
             return self._hoist_bit(e, loc)
         if isinstance(e, UnOp) and e.op == "lnot":
             return self._hoist_bit(e, loc)
+        # a 1-bit WORD operation over boolean nodes -- `(w == 3) | (w == 4)`, the Booth encoder's
+        # digit bits inside a concat -- is a boolean tree the word cascade cannot take
+        # (`word expr BinOp`); as a named bit the item-level boolean emitter handles it
+        if isinstance(e, (BinOp, UnOp)) and getattr(e, "width", None) == 1 and _has_bool_node(e):
+            return self._hoist_bit(e, loc)
         return e
 
     def _ref_name(self, e) -> str:
@@ -1258,6 +1267,12 @@ class _ExprMixin:
             opw = max(lw, rw) if op in _CMP_OPS else width
             left_ir  = self._lower_expr(e.left,  subst)
             right_ir = self._lower_expr(e.right, subst)
+            # a ONE-bit bitwise and/or whose operands carry boolean nodes -- `(w == 3) | (w == 4)`,
+            # the Booth encoder's digit bits -- is the logical connective of the same name at that
+            # width, and only as such does the item-level boolean emitter take it (the word
+            # cascade refused it as `word expr BinOp`; a field report, 2026-09-04)
+            if width == 1 and op in ("and", "or") and (_has_bool_node(left_ir) or _has_bool_node(right_ir)):
+                op = "log" + op
             # ── Replication-masked mux: {N{cond_1bit}} & data  →  Cond(cond, data, 0)
             # This RTL idiom implements a mux arm: all-ones mask passes data; all-zeros passes 0.
             # The correct translation is one rule per arm (firing independently on cond),
@@ -1487,6 +1502,8 @@ class _ExprMixin:
                 # else in a bound still folds to one iteration and is recorded for the refusal
                 # (a field report, 2026-09-04)
                 try:
+                    if self._lane_hi - self._lane_lo <= (self._lane_step or 1):
+                        raise _NotAffineRead()      # ONE iteration: the genvar is that constant (D1 allows it) -- fold below
                     if sk == "Simple":
                         hi_ir, lo_ir = self._affine_ir(e.left), self._affine_ir(e.right)
                         ws = {self._eval_affine(hi_ir, i) - self._eval_affine(lo_ir, i) + 1 for i in self._lane_range()}
@@ -1500,7 +1517,13 @@ class _ExprMixin:
                         return BinOp("and", BinOp("shr", base, lo_ir, w), Const((1 << w) - 1, w), w)
                 except Exception:
                     pass
-                self._genvar_folded = "slice bound"
+                if self._lane_hi - self._lane_lo <= (self._lane_step or 1):
+                    # a single-iteration run: the bounds fold to that iteration's constants, which
+                    # is exact -- and the target need not be a lane (the reporter's word-headed
+                    # unsafe rule, 2026-09-04: `top = src[2*i +: 3]` under `if (i == 3)`)
+                    pass
+                else:
+                    self._genvar_folded = "slice bound"
             if sk == "Simple":                      # [hi:lo] -- left is hi, right is lo
                 hi = self._const_of(e.left)
                 lo = self._const_of(e.right)

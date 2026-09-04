@@ -782,3 +782,33 @@
   gate: [sweep:booth_window_read_at_an_affine_offset, sweep:in_lane_offset_slice_is_a_window]
   docs: [docs/reference/SV_FEATURE_COVERAGE.md]
 
+- id: window-read-single-iteration
+  date: 2026-09-04
+  status: fixed
+  found: "the third report's UPDATE at 896d1aa: an UNSAFE RULE `val(Inst, <word>, V3, T) :- ..., V1 = @mul(2, I, 32), ...` -- a window read `src[2*i +: 3]` assigned to a plain word inside a single-iteration branch of a conditional generate; reconstructed as probe r8"
+  what: "in a single-iteration run the window's bounds fold to that iteration's constants (the rule the genvar-as-value check already applies), so the target need not be a lane; and a plain net written inside a generate from a value that still mentions the lane index is refused by name, never an unsafe rule at the solver's door"
+  why: "yesterday's affine-window read returned the symbolic shift whenever a genvar was in scope; the head binds I only for a lane target, and a word target under `if (i == 3)` has no lane"
+  fix: "_exprs.py RangeSelect branch (fold when hi - lo <= step); _modules.py _lower_assign_one safety net (_mentions_laneidx on a NamedValue target)"
+  gate: [sweep:booth_window_read_at_an_affine_offset, sweep:in_lane_offset_slice_is_a_window]
+  docs: []
+
+- id: per-bit-boolean-lane-source
+  date: 2026-09-04
+  status: fixed
+  found: "reconstructing the update's remaining `word expr BinOp` on the Booth encoder: a lane element built as a concatenation of BITWISE terms over the element's bits emitted per-bit rules reading the source WORD with I unbound (probe r6, an UNSAFE RULE)"
+  what: "the boolean emitter is lane-aware (lane_dims/lane_ctx threaded to its leaves, every rule able to carry the lane domain), and inside a lane rule every reference to a one-level lane is rewritten to that lane's element at the head's index (`_index_lane_refs`) before any leaf builder sees it"
+  why: "yesterday's WordBit fix covered the @slc path only; the boolean leaves (the compare splitter, the bit reader) each read the word by their own route, so the fix has to happen before the leaves are built, once"
+  fix: "stage3_emit: _emit_bool(lane_dims, lane_ctx, extra), _index_lane_refs, the per-bit Bool1 call site"
+  gate: [sweep:packed_lane_read_at_a_sub_element, sweep:booth_digit_bits_from_compares]
+  docs: []
+
+- id: lane-boolean-from-compares
+  date: 2026-09-04
+  status: fixed
+  found: "the update's `word expr BinOp` x4 on the Booth encoder: a lane element built as a concatenation of COMPARISONS joined by bitwise | and & at one bit (probe r5)"
+  what: "a one-bit bitwise and/or over boolean nodes is the logical connective of the same name; a one-bit expression containing a boolean node is hoisted as a named bit when used as a concat part; and the per-lane comb path falls back to the boolean emitter for any one-bit boolean over lane leaves instead of refusing it as non-copy"
+  why: "the word cascade knows arithmetic and bitwise operators and nothing of `==`; the item-level boolean emitter is what takes a boolean tree, and per lane it needed the domain literal and lane-indexed leaves -- the sweep caught the first attempt reading the 12-bit word of `w` and computing 0 on every lane (a silent wrong the row turned loud)"
+  fix: "_exprs.py BinaryOp normalisation and _as_word; stage3_emit per-lane fallback"
+  gate: [sweep:booth_digit_bits_from_compares]
+  docs: [docs/reference/SV_FEATURE_COVERAGE.md]
+

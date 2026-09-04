@@ -17,6 +17,7 @@ from ..ir.nodes import (
 )
 from ..ir.types import ElementType, IRType, Kind
 from ._common import _BINOP, _enum_name
+from ._exprs import _mentions_laneidx
 
 
 @dataclass
@@ -746,6 +747,18 @@ class _ModuleMixin:
             rhs_expr = self._lower_expr(a.right, top=True)
             return [CombItem(lhs=base, rhs=rhs_expr, loc=loc, lane_hi=self._lane_hi,
                              lane_lo=self._lane_lo, lane_step=self._lane_step, lane_off=lane_off)]
+        if (self._genvars and _enum_name(left.kind) == "NamedValue"
+                and left.symbol.name not in self._lane_dims and left.symbol.name not in self._gen_locals):
+            # a plain WORD written inside a generate whose value mentions the lane index would
+            # emit a rule nothing binds `I` in (an UNSAFE RULE at the solver's door, 2026-09-04).
+            # A generate-LOCAL net is a lane by construction (F17) and is exempt: its head binds I.
+            probe = self._lower_expr(a.right, top=True)
+            if _mentions_laneidx(probe):
+                raise NotImplementedError(
+                    f"`{left.symbol.name}` is a plain net written inside a for-generate from a value "
+                    f"that depends on the loop index ({str(getattr(a.right, 'syntax', '')).strip()!r}): "
+                    f"nothing binds the index for a non-lane target (index the target with the genvar, "
+                    f"or unroll explicitly)")
         sfm = self._struct_field_mem_select(left)
         if sfm is not None:    # assign s.arr[idx] = v -> a combinational memory cell write on s(arr)
             mem, sel = sfm

@@ -1202,7 +1202,8 @@ def _try_reduction_over_index(lhs: str, rhs: Expr, out: _Out, bitvec_signals,
 
 
 def _emit_bool(lhs: str, expr: Expr, out: _Out, style: str, clk: str, has_clock: bool,
-               widths: dict[str, int] | None = None) -> None:
+               widths: dict[str, int] | None = None, lane_dims: dict | None = None,
+               lane_ctx: bool = False, extra: list | None = None) -> None:
     """A boolean function over leaves -- 1-bit signals AND comparisons / word `!=0` tests (so
     `(a==b) && (x!=y)`, gates, muxes all work). Enumerate the leaf minterms: on-set -> true rules,
     off-set -> false rules (v1) or the excluded-middle complement (v2). A 1-bit result is a width-1
@@ -1233,12 +1234,12 @@ def _emit_bool(lhs: str, expr: Expr, out: _Out, style: str, clk: str, has_clock:
             gexpr = g[0]
             for extra in g[1:]:
                 gexpr = BinOp(expr.op, gexpr, extra, 1)
-            _emit_bool(sub, gexpr, out, style, clk, has_clock, widths)
+            _emit_bool(sub, gexpr, out, style, clk, has_clock, widths, lane_dims, lane_ctx, extra)
             subsigs.append(Ref(sub))
         combined = subsigs[0]
         for s in subsigs[1:]:
             combined = BinOp(expr.op, combined, s, 1)
-        _emit_bool(lhs, combined, out, style, clk, has_clock, widths)   # combine (few leaves now)
+        _emit_bool(lhs, combined, out, style, clk, has_clock, widths, lane_dims, lane_ctx, extra)   # combine (few leaves now)
         return
     ctx = _Ctx(out.used)
     leaves: list[tuple[str, list[str], list[str]]] = []   # (key, true_lits, false_lits)
@@ -1252,9 +1253,14 @@ def _emit_bool(lhs: str, expr: Expr, out: _Out, style: str, clk: str, has_clock:
         if br is not None:
             t_lits, f_lits = br
         elif isinstance(e, Ref) and (widths is None or widths.get(e.name, 1) <= 1):
-            t_lits, f_lits = [f"val({e.name}, 1, T)"], [f"val({e.name}, 0, T)"]
+            _nm = _lane(e.name, lane_dims) if (lane_ctx and (lane_dims or {}).get(e.name) == 1) else e.name
+            t_lits, f_lits = [f"val({_nm}, 1, T)"], [f"val({_nm}, 0, T)"]
         else:                                                 # a word expression used as a bool
-            rb, rv = _word_body(e, "T", ctx)
+            # inside a LANE rule a one-level lane source is read at the head's lane (`w(I)`), not
+            # as its word -- `enc[i][1] ^ enc[i][0]` on the per-bit path read `val(w, ..)` and
+            # left I unbound (a field report, 2026-09-04)
+            _sh = ({n: Shape.INDEXED for n, d in (lane_dims or {}).items() if d == 1} if lane_ctx else None)
+            rb, rv = _word_body(e, "T", ctx, shapes=_sh, lane_dims=lane_dims, lane_ctx=lane_ctx)
             t_lits, f_lits = [*rb, f"{rv} != 0"], [*rb, f"{rv} = 0"]
         seen[key] = len(leaves)
         leaves.append((key, t_lits, f_lits))
@@ -1286,7 +1292,7 @@ def _emit_bool(lhs: str, expr: Expr, out: _Out, style: str, clk: str, has_clock:
     if pi_onset is not None:
         bind = _bind_t
         for body in pi_onset:
-            out.rule(f"val({lhs}, 1, T)", bind(body))
+            out.rule(f"val({lhs}, 1, T)", [*(extra or []), *bind(body)])
         # NAF zero: one rule derives val(lhs,0,T) when no ON arm fires.
         # Clocked: time(CK,T) in _false_bit(v2) binds T — no domain needed.
         # Clockless (unit-test only): use val(sig,_,T) from the first leaf so T binds from
@@ -1300,7 +1306,7 @@ def _emit_bool(lhs: str, expr: Expr, out: _Out, style: str, clk: str, has_clock:
                     name = tl[0].split(",")[0][4:]
                     domain = [f"val({name}, _, T)"]
                     break   # one signal is enough to bind T
-        _false_bit(lhs, [], domain, out, "v2", clk, has_clock)
+        _false_bit(lhs, [], [*(extra or []), *domain], out, "v2", clk, has_clock)
         return
 
     # Fallback: full truth-table minterm enumeration (XOR, comparisons, complex shapes).
@@ -1313,9 +1319,9 @@ def _emit_bool(lhs: str, expr: Expr, out: _Out, style: str, clk: str, has_clock:
 
     bind = _bind_t
     for body in onset:
-        out.rule(f"val({lhs}, 1, T)", bind(body))
+        out.rule(f"val({lhs}, 1, T)", [*(extra or []), *bind(body)])
     domain = [lit for _k, tl, _fl in leaves for lit in tl if lit.startswith("val(")]
-    _false_bit(lhs, [bind(b) for b in offset], domain, out, style, clk, has_clock)
+    _false_bit(lhs, [[*(extra or []), *bind(b)] for b in offset], [*(extra or []), *domain], out, style, clk, has_clock)
 
 
 # --------------------------------------------------------------------------
@@ -1625,7 +1631,9 @@ def _emit_bitvec(lhs: str, rhs: Expr, out: _Out, widths: dict[str, int],
                 if seq_guards:
                     out.rule(f"val({bit_lhs}, 1, {head_t})", [*seq_guards, f"{vt} != 0", *vbody])
                 else:
-                    _emit_bool(bit_lhs, expr, out, style=style, clk=clk, has_clock=has_clock, widths=widths)
+                    _emit_bool(bit_lhs, _index_lane_refs(expr, lane_dims) if "(I" in bit_lhs else expr, out,
+                               style=style, clk=clk, has_clock=has_clock, widths=widths,
+                               lane_dims=lane_dims, lane_ctx="(I" in bit_lhs)
             else:
                 # Replicated Bool1 across a range: one range-guarded rule covers lo..hi
                 bit_lhs = _lane_term(lhs, f"{_lane_prefix}, {bit_var}" if _lane_prefix else bit_var)
@@ -2012,6 +2020,13 @@ def _emit_comb(item: CombItem, shapes: dict[str, Shape], out: _Out, style: str, 
         elif all(_is_lane_conjunct(c) for c in _flatten_logand(rhs)):
             # the &&-spelling with single conjuncts still lands here, below the word path
             _emit_lane_and(lhs, _flatten_logand(rhs), shapes, out, style, lane_dims, lane_dom=_lane_dom)
+        elif isinstance(rhs, (BinOp, UnOp)) and (lane_elem_w or {}).get(lhs, (widths or {}).get(lhs, 1)) == 1:
+            # any other ONE-bit boolean over lane leaves -- `(w[i] == 3) | (w[i] == 4)`, the Booth
+            # encoder's digit bits -- goes to the boolean emitter, lane-aware, every rule carrying
+            # the lane domain literal (the per-lane twin of the scalar path; a field report,
+            # 2026-09-04: hoisted as a lane temp, then refused here as "non-copy")
+            _emit_bool(lh, _index_lane_refs(rhs, lane_dims), out, style, clk, has_clock, widths,
+                       lane_dims=lane_dims, lane_ctx=True, extra=_lane_dom([]))
         else:
             out.problem(item.loc, f"indexed (per-lane) non-copy combinational for {lhs}")
         return
@@ -2115,6 +2130,31 @@ def _emit_packed_bit_extraction(lhs: str, rhs: Expr, out: _Out,
     # _emit_bool on Ref(inter) emits: val(lhs,1,T) :- val(inter,1,T) + NAF zero.
     _emit_bool(lhs, Ref(inter), out, style, clk, has_clock, widths)
 
+
+
+def _index_lane_refs(e, lane_dims: dict | None):
+    """Inside a LANE rule, a bare reference to a one-level lane means that lane's ELEMENT at the
+    head's index: rewrite `Ref(w)` to `ElemSel(w, I)` so every leaf builder -- the compare
+    splitter, the word body, the bit reader -- reads `val(w(I), ..)` natively instead of the
+    word (a field report, 2026-09-04: the Booth encoder's digit bits compared the 12-bit word
+    of `w` with 3 on every lane and read 0)."""
+    import dataclasses
+    if not lane_dims:
+        return e
+    if isinstance(e, Ref):
+        return ElemSel(e.name, LaneIdx(0)) if lane_dims.get(e.name) == 1 else e
+    if isinstance(e, (ElemSel, MemRef, LaneIdx, Const, Tag)) or not dataclasses.is_dataclass(e):
+        return e
+    changes = {}
+    for f in dataclasses.fields(e):
+        v = getattr(e, f.name)
+        if isinstance(v, Expr):
+            changes[f.name] = _index_lane_refs(v, lane_dims)
+        elif isinstance(v, tuple) and v and all(isinstance(x, tuple) and len(x) == 2 for x in v):
+            changes[f.name] = tuple((_index_lane_refs(a, lane_dims), b) for a, b in v)     # Concat parts
+        elif isinstance(v, tuple) and v and all(isinstance(x, Expr) for x in v):
+            changes[f.name] = tuple(_index_lane_refs(x, lane_dims) for x in v)
+    return dataclasses.replace(e, **changes) if changes else e
 
 
 def _cond_branches(sel: Expr, ctx: _Ctx,
