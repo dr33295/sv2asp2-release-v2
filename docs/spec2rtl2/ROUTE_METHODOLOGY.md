@@ -2214,6 +2214,21 @@ the printer rather than by discipline:
    parametric widths), and no `@` sigil in any identifier — the sigil stops at the
    surface. The `@` in `always_ff @(posedge clk)` is SystemVerilog's own event control.
 
+   *What "width-safe" means, exactly* (2026-09-04, from a review of the Life print, where
+   one eight-term sum had become six wires). SystemVerilog sizes an expression to its
+   context — the target of the assignment, or the widest operand around it — and never
+   truncates in the middle. The `@func`s do truncate, at the width written on every node.
+   The two agree whenever the node's width *is* the context's width and the operation is
+   one for which reducing modulo 2^w after each step equals reducing once at the end:
+   add, subtract, multiply, and the bitwise and/or/xor. Such a node is printed inline, in
+   parentheses; a select `x[i]` is always a leaf; and `b ? 1 : 0` at width w prints as the
+   cast `W'(b)`. A node whose width differs from its context — `add(add(a, b, 4), c, 8)`,
+   "add at four bits, then widen" — keeps its wire, because there the intermediate
+   truncation is the semantics and an inline `a + b` would keep the carry the four-bit sum
+   drops. The gate `print_still_hoists_a_sum_narrower_than_its_target` is that case, round
+   trip included. The flop generate borrows the loop-variable names of the lane feeding
+   its `d` pin, so `g[r][c] <= gM1[r][c]` reads beside the generates that use `r` and `c`.
+
 The round trip is what holds the printer to all of this while keeping it honest: the
 printed file must translate back and match the authored model value for value, with
 Icarus arbitrating — a print convention that broke the round trip would be rejected by

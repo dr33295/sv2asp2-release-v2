@@ -403,12 +403,12 @@
 
 - id: dist-egg-info
   date: 2026-09-02
-  status: open
+  status: fixed
   found: review
   what: the distribution's .gitignore does not cover src/sv2asp.egg-info
   why: a stale egg-info once carried outdated licence metadata
-  fix: ~
-  gate: []
+  fix: "the bundle's .gitignore names *.egg-info/ (build_dist.py); the residue untracked on the release line at ab195f0"
+  gate: [test_v2_user_distribution_is_safe_to_ship]
   docs: []
 
 - id: killed-run-leaves-solver
@@ -709,4 +709,15 @@
   fix: scripts/publish_release_v2.sh; the maintainer note records the procedure and the recipient's update command
   gate: [test_v2_release_publish_is_linear]
   docs: [notes/MAINTAINER.md]
+
+- id: print-inline-ring
+  date: 2026-09-04
+  status: fixed
+  found: "user review of the Life print: one eight-term sum printed as six hoisted lanes, a one-bit select as a seventh, every neighbour widened as `g ? W'(1) : W'(0)`, the flop generate on i/j beside combinational generates on r/c, the header naming the v1 tool"
+  what: "the printer inlines a ring operation (add/sub/mul/and/or/xor) at exactly its context's width, prints a select as a leaf and `ite(b, k(1,w), k(0,w))` as the cast `W'(b)`, names an instance lane's genvars after the feeding lane's loop variables, and says sv2asp.aspfirst2"
+  why: "SystemVerilog sizes an expression to its context and the @func truncates at the node; the two agree for ring operations when the widths coincide, so the intermediate wire said nothing; anywhere else the wire is the semantics and stays (the sabotage gate: add(add(a,b,4),c,8) keeps its wire and round-trips). The dead constant enable wire (`tie1`) stays declared: the round trip counts a net present on one ASP side only as a mismatch"
+  fix: "printer.py: RING_OPS, ctx_w threaded through leaf/expr for ring operands and ternary arms, _ctx_width from the raw lane width, _same_width by normalised spelling, the cast peephole, the select leaf, the genvar naming, HEADER"
+  gate: [test_v2_print_inlines_ring_arithmetic_at_the_target_width, test_v2_print_still_hoists_a_sum_narrower_than_its_target, test_v2_lane_instances_have_axes]
+  docs: [ROUTE_METHODOLOGY 27.1 convention 4, TOOL.md]
+  note: "the Conway FIELD design's print still does not round-trip, before and after this change alike: its gM1 line hits F30 (a ternary arm hoisted inside a nested generate loses a genvar -- `c2(I)` reading `nc(I, J)`), the recorded open translator defect; that is the next item"
 
