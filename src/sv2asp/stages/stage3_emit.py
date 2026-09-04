@@ -1428,6 +1428,10 @@ def _enum_numeric_refs(e: object, enum_names: set[str]) -> set[str]:
     return found
 
 
+#: the last leaf `_bitvec_flatten` could not represent -- so the refusal can NAME it
+_BITVEC_LAST_FAIL: list = [None]
+
+
 def _bitvec_flatten(e: Expr,
                     width: int | None = None,
                     bitvec_signals: frozenset[str] = frozenset(),
@@ -1463,6 +1467,28 @@ def _bitvec_flatten(e: Expr,
         if e.base.name in bitvec_signals:
             return [Indexed(e.base.name, e.index)]
         return [WordBit(e.base.name, e.index)]
+    # a LANE MEMBER with a constant index -- `pp[2][1:0]`, `pp[2][5]`, `pp[2]` -- is a word the
+    # program derives (`val(pp(2), V, T)`): its bits are read the way a plain net's are. The
+    # hand-wired fan-in of a Wallace reduction stage assembles each output lane from slices of
+    # many different source lanes, and the flattener had no case for it (a field report with a
+    # probe, 2026-09-04) -- "bitvec (per-bit) lowering unsupported", naming nothing.
+    def _member(x):
+        return (isinstance(x, ElemSel) and isinstance(x.index, Const) and not x.more
+                and f"{x.base}({x.index.value})")
+    if isinstance(e, Slice) and _member(e.base):
+        return [WordBit(_member(e.base), e.lo + i) for i in range(e.hi - e.lo + 1)]
+    if isinstance(e, Slice) and isinstance(e.base, Slice):
+        # a slice of a slice -- `pp[0][7:6]` on a WORD-shaped packed 2-D port lowers as a
+        # constant slice of a constant slice of the word -- is the inner flattening's sub-range
+        inner = _bitvec_flatten(e.base, e.base.hi - e.base.lo + 1, bitvec_signals, comb_defs)
+        if inner is not None and len(inner) > e.hi:
+            return inner[e.lo:e.hi + 1]
+        _BITVEC_LAST_FAIL[0] = e
+        return None
+    if isinstance(e, BitSel) and _member(e.base) and isinstance(e.index, int):
+        return [WordBit(_member(e.base), e.index)]
+    if _member(e) and width is not None:
+        return [WordBit(_member(e), i) for i in range(width)]
     if isinstance(e, SExt) and isinstance(e.operand, (Ref, Slice, BitSel)):
         low = _bitvec_flatten(e.operand, e.from_w, bitvec_signals, comb_defs)
         if low is None or len(low) != e.from_w:
@@ -1540,8 +1566,10 @@ def _bitvec_flatten(e: Expr,
                 else:
                     out.append(Bool1(expr))
             else:
+                _BITVEC_LAST_FAIL[0] = expr
                 return None
         return out
+    _BITVEC_LAST_FAIL[0] = e
     return None
 
 
@@ -1586,7 +1614,10 @@ def _emit_bitvec(lhs: str, rhs: Expr, out: _Out, widths: dict[str, int],
     else:
         bits = _bits_override if _bits_override is not None else _bitvec_flatten(rhs, widths.get(lhs), bitvec_signals, comb_defs)
     if bits is None:
-        out.problem(loc, f"bitvec (per-bit) lowering unsupported for {lhs}")
+        leaf = _BITVEC_LAST_FAIL[0]
+        out.problem(loc, f"bitvec (per-bit) lowering unsupported for {lhs}: no per-bit reading of the leaf "
+                         f"`{type(leaf).__name__}` {leaf!r}"[:300] if leaf is not None
+                    else f"bitvec (per-bit) lowering unsupported for {lhs}")
         return set()
 
     covered: set[int] = set()

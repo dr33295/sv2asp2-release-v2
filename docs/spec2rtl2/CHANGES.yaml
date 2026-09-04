@@ -852,3 +852,13 @@
   gate: []
   docs: []
 
+- id: bitvec-lane-member-and-nested-slice
+  date: 2026-09-04
+  status: fixed
+  found: "the third report's THIRD update at 84de236, WITH a minimised probe: 205 refusals `bitvec (per-bit) lowering unsupported for <signal>` in the reduction stage -- each output lane assembled by hand from slices of many different source lanes, no genvar (`out[0] = {pp[2][1:0], pp[1][5:2], pp[0][7:6]}`); and the message named nothing"
+  what: "the per-bit flattener reads a slice, a bit or the whole of a LANE MEMBER with a constant index (`val(pp(2), V, T)` sliced at the bit), and a slice of a slice as the inner flattening's sub-range (a word-shaped packed 2-D port lowers `pp[0][7:6]` that way); the refusal now names the leaf it could not read"
+  why: "a member with a constant index is a word the program derives, read like any word; the reporter's complaint about the message was right -- every other refusal names its shape and this one did not"
+  fix: "stage3_emit _bitvec_flatten: the _member cases, the Slice-of-Slice case, _BITVEC_LAST_FAIL; the caller's message"
+  gate: [sweep:hand_wired_fan_in_from_many_lanes, test_bitvec_refusal_names_the_leaf]
+  docs: [docs/reference/SV_FEATURE_COVERAGE.md]
+
