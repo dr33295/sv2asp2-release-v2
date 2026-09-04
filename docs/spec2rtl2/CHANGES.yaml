@@ -741,3 +741,44 @@
   gate: [sweep:lane_fields_at_affine_positions, sweep:lane_fields_constant_parts, test_lane_fields_are_checked_disjoint_and_covering, test_lane_fields_compose_exactly_at_128_bits]
   docs: [docs/reference/SV_FEATURE_COVERAGE.md, docs/reference/SV_TRANSLATION_CATALOG.md 4.6]
 
+- id: primitive-pin-hoist
+  date: 2026-09-04
+  status: fixed
+  found: "third field report off the Booth partial-product generator: a vectored mux with NO definition in scope, `.sel({s3, s2, s1, s0})`, crashed with an AttributeError after F41 had fixed the instantiated path only"
+  what: "on BOTH primitive paths a compound INPUT connection is hoisted into a temp named after the instance and the temp connected; an output, clock, reset or lane pin fed by an expression is a refusal naming the pin; never an attribute error"
+  why: "F41 fixed one of two lowering paths (the F-list lesson: a fix lands half-applied); hoisting is what the refusal told a person to do by hand, so the tool does it"
+  fix: "_lower_uninst_primitive.pin_name(pin, role); _lower_instance.actual_name(pin, role)"
+  gate: [sweep:vcmux_uninstantiated_concat_pins, test_uninstantiated_primitive_pins_are_named_or_hoisted]
+  docs: []
+
+- id: lane-field-single-bit-and-ranges
+  date: 2026-09-04
+  status: fixed
+  found: "third field report: `pp[i][127] = s` refused (an element select after the lane select), and `lane fields written from generates with different ranges` (a first-lane branch of a conditional generate)"
+  what: "an element select after the lane select is a one-bit field at that position; fields are grouped PER LANE by the ranges containing it, checked disjoint and covering per lane, one definition per run of lanes sharing a field set"
+  why: "yesterday's assembly required one range per word; a conditional generate partitions the loop into runs, and a per-lane grouping is the general form of the same check. A pure genvar-select chain (`match[i][j]`), the byte-lane idiom and the offset select come first -- a bare genvar is affine and the parser stole the corpus's 2-D CAM until the regen gate said so"
+  fix: "_lane_field_target (ElementSelect; the lane roller's shapes first); _assemble_lane_fields per lane"
+  gate: [sweep:lane_field_single_bit_and_conditional_generate, test_lane_fields_are_checked_disjoint_and_covering]
+  docs: [docs/reference/SV_TRANSLATION_CATALOG.md 4.6]
+
+- id: packed-lane-sub-element-read
+  date: 2026-09-04
+  status: fixed
+  found: "third field report: `read/written as lanes of 3 bit(s) and of 1 bit(s)` on the Booth encoder's output -- a lane of 3-bit elements read at `enc[i][2]` and `enc[i][1:0]`"
+  what: "a constant sub-element position on a lane is a slice of the lane's ELEMENT, not a second lane view; and in the per-bit renderer a one-level lane source inside a lane rule is read at the head's lane (`enc(I)`), where it read the bare word and left I unbound"
+  why: "the nested-select branch took any genvar in any index as a two-level lane read and registered a one-bit view beside the three-bit one; the WordBit renderer had no lane awareness at all (the second half showed only once the first was fixed)"
+  fix: "_exprs.py nested-select branch (a genvar must index a level beyond the first); stage3_emit WordBit read lane-aware"
+  gate: [sweep:packed_lane_read_at_a_sub_element]
+  docs: [docs/reference/SV_FEATURE_COVERAGE.md]
+
+- id: affine-window-read
+  date: 2026-09-04
+  status: fixed
+  found: "third field report: `for-generate body uses genvar 'i' as a VALUE ('slice bound')` -- the Booth encoder's sliding window `m[2*i+2 : 2*i]`"
+  what: "a range select whose bounds are affine in the genvar with a width the same at every iteration lowers as the word shifted right by the affine amount and masked -- the runtime-base form with the lane index as the amount; `+:` at a non-stride offset the same"
+  why: "the byte-lane idiom accepted an offset only when the stride equals the width; a window at any affine offset is exactly shift-and-mask, which the translator already had for a runtime base"
+  fix: "_exprs.py RangeSelect branch"
+  note: "the refusal set shrank by TWO designs, named: the byte-lane test's `off` (a[i*8 + 4 +: 4]) and the refusal sweep's `in_lane_offset_slice` -- both now value rows against Icarus (in_lane_offset_slice_is_a_window)"
+  gate: [sweep:booth_window_read_at_an_affine_offset, sweep:in_lane_offset_slice_is_a_window]
+  docs: [docs/reference/SV_FEATURE_COVERAGE.md]
+

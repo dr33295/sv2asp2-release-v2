@@ -1727,8 +1727,12 @@ def _emit_bitvec(lhs: str, rhs: Expr, out: _Out, widths: dict[str, int],
         v0, v = ctx.fresh(), ctx.fresh()
         ctx.used.add("slc")
         out.used |= ctx.used
+        # a ONE-LEVEL LANE source inside a lane rule is read at the head's lane, `enc(I)` --
+        # `mag[i] = enc[i][1:0]` on a two-level per-bit target read the WORD `enc` and left I
+        # unbound (a field report, 2026-09-04: the Booth encoder's magnitude bits)
+        src = _lane_term(base, "I") if (lane_dims.get(base, 0) == 1 and "(I" in lh) else base
         out.rule(f"val({lh}, {v}, {head_t})",
-                 [rng, *(seq_guards or []), f"val({base}, {v0}, T)", f"{v} = @slc({v0}, {term}, 1)"])
+                 [rng, *(seq_guards or []), f"val({src}, {v0}, T)", f"{v} = @slc({v0}, {term}, 1)"])
 
     # Coalesce maximal runs by (variant, source) with constant step.
     # Bool1 never coalesces; ConstBit coalesces only equal-valued runs (step=0).

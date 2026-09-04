@@ -476,7 +476,15 @@ class _ModuleMixin:
         """`(base, lo_ir, hi_ir, w, wtot)` if `left` is `base[gv][<range>]` on a packed 2-D
         signal with both bounds affine in the in-scope genvar (constants included); `w` is the
         field width when it is the same for every iteration, else None. None if not this shape."""
-        if not self._genvars or _enum_name(getattr(left, "kind", None) or "") != "RangeSelect":
+        lk = _enum_name(getattr(left, "kind", None) or "")
+        if not self._genvars or lk not in ("RangeSelect", "ElementSelect"):
+            return None
+        # the lane roller's own shapes come first: a pure genvar-select chain (`match[i][j]`, a
+        # two-level lane write), the byte-lane idiom and the neighbouring-lane offset are not
+        # fields -- a bare genvar is affine, and without this the field parser stole the
+        # corpus's 2-D CAM (the regen gate, 2026-09-04)
+        if (self._genvar_select_dims(left) is not None or self._genvar_lane_slice(left) is not None
+                or self._genvar_offset_select(left) is not None):
             return None
         inner = self._peel(left.value)
         if _enum_name(inner.kind) != "ElementSelect":
@@ -484,6 +492,19 @@ class _ModuleMixin:
         gs = self._genvar_select_dims(inner)
         if gs is None or gs[1] != 1:
             return None
+        if lk == "ElementSelect":
+            # `pp[i][127] = s`: a ONE-bit field at a constant or affine position (2026-09-04)
+            base = self._select_root(inner)
+            if base is None or getattr(getattr(base, "type", None), "isUnpackedArray", False):
+                return None
+            wtot = getattr(getattr(inner, "type", None), "bitWidth", None)
+            if not wtot:
+                return None
+            try:
+                lo = self._affine_ir(left.selector)
+            except _NotAffine:
+                return None
+            return gs[0], lo, lo, 1, wtot
         base = self._select_root(inner)
         if base is None or getattr(getattr(base, "type", None), "isUnpackedArray", False):
             return None
@@ -594,43 +615,67 @@ class _ModuleMixin:
         self._lane_fields.setdefault(base, []).append(rec)
 
     def _assemble_lane_fields(self, comb, flagged) -> None:
+        """One lane definition per RUN of lanes that share a field set. A word's fields may come
+        from several generate ranges -- a conditional generate inside the loop is partitioned
+        into runs, and a first-lane special case is written by its own block -- so the fields
+        are grouped PER LANE by which ranges contain it, checked disjoint and covering per lane,
+        and emitted once per maximal run of consecutive lanes with the same field set (a field
+        report, 2026-09-04: `lane fields written from generates with different ranges`)."""
         for base, recs in self._lane_fields.items():
-            ranges = {r[5] for r in recs}
             wtots = {r[6] for r in recs}
             loc = recs[0][4]
-            if len(ranges) != 1 or len(wtots) != 1:
-                flagged.append((loc, f"{base}: lane fields written from generates with different ranges"))
+            if len(wtots) != 1:
+                flagged.append((loc, f"{base}: lane fields of different word widths"))
                 continue
-            (lo_i, hi_i, step), wtot = ranges.pop(), wtots.pop()
+            wtot = wtots.pop()
+            lanes = sorted({i for r in recs for i in range(r[5][0], r[5][1], r[5][2])})
+            per_lane: dict = {}
             bad = None
-            for i in range(lo_i, hi_i, step):
+            for i in lanes:
+                fs = tuple(k for k, r in enumerate(recs) if i in range(r[5][0], r[5][1], r[5][2]))
                 covered = [0] * wtot
-                for lo, hi, w, _f, l, _r, _w in recs:
+                for k in fs:
+                    lo, hi = recs[k][0], recs[k][1]
                     a, b = self._eval_affine(lo, i), self._eval_affine(hi, i)
                     if a < 0 or b >= wtot or b < a:
-                        bad = f"iteration {i}: field [{b}:{a}] is outside the {wtot}-bit word"
+                        bad = f"lane {i}: field [{b}:{a}] is outside the {wtot}-bit word"
                         break
-                    for k in range(a, b + 1):
-                        if covered[k]:
-                            bad = f"iteration {i}: bit {k} is written by two fields"
+                    for q in range(a, b + 1):
+                        if covered[q]:
+                            bad = f"lane {i}: bit {q} is written by two fields"
                             break
-                        covered[k] = 1
+                        covered[q] = 1
                     if bad:
                         break
                 if bad:
                     break
                 if not all(covered):
-                    bad = f"iteration {i}: bit(s) {[k for k, c in enumerate(covered) if not c][:6]} are written by no field"
+                    bad = f"lane {i}: bit(s) {[q for q, c in enumerate(covered) if not c][:6]} are written by no field"
                     break
+                per_lane[i] = fs
             if bad:
                 flagged.append((loc, f"{base}: the lane fields must be disjoint and cover the word -- {bad}"))
                 continue
-            rhs = recs[0][3]
-            for r in recs[1:]:
-                rhs = BinOp("or", rhs, r[3], wtot)
             self._lane_dims[base] = max(self._lane_dims.get(base, 0), 1)
             self._note_lane_elem_w(base, wtot)
-            comb.append(CombItem(lhs=base, rhs=rhs, loc=loc, lane_hi=hi_i, lane_lo=lo_i, lane_step=step))
+            # runs of consecutive lanes (step 1) with the same field set -> one definition each
+            run_start, run_fs = None, None
+            def emit(lo_i, hi_i, fs):
+                rhs = recs[fs[0]][3]
+                for k in fs[1:]:
+                    rhs = BinOp("or", rhs, recs[k][3], wtot)
+                comb.append(CombItem(lhs=base, rhs=rhs, loc=recs[fs[0]][4], lane_hi=hi_i + 1, lane_lo=lo_i, lane_step=1))
+            prev = None
+            for i in lanes:
+                fs = per_lane[i]
+                if run_start is not None and (fs != run_fs or i != prev + 1):
+                    emit(run_start, prev, run_fs)
+                    run_start = None
+                if run_start is None:
+                    run_start, run_fs = i, fs
+                prev = i
+            if run_start is not None:
+                emit(run_start, prev, run_fs)
         self._lane_fields = {}
 
     def _lower_assign_one(self, a, left, loc, writes):
@@ -1578,6 +1623,31 @@ class _ModuleMixin:
             cells.append(CellInfo(inst=node.name, cell_type=mod.lower(),
                                   outs=tuple(outs), parent=self._current_module))
 
+        def pin_name(pin: str, role: str = "input") -> str:
+            """The NET a pin is connected to. A compound INPUT connection -- a concatenation
+            of select bits, a replication, an expression -- is hoisted into a named temp
+            (`<inst>__tN`) and the temp's name returned, which is what the refusal used to
+            tell a person to do by hand. An output, clock or reset pin must be a net, and
+            anything else there is a refusal that NAMES the pin -- never a Python
+            AttributeError (a field report, 2026-09-04: a vectored mux with no definition in
+            scope, `.sel({s3, s2, s1, s0})`, crashed here after F41 had fixed the
+            instantiated path only)."""
+            e = pin_expr[pin]
+            p = self._peel(e)
+            if hasattr(p, "symbol"):
+                return p.symbol.name
+            if role != "input":
+                raise NotImplementedError(
+                    f"{spec.category} {node.name}: pin {pin} ({role}) is connected to a "
+                    f"{_enum_name(p.kind)} (`{str(getattr(p, 'syntax', '')).strip()}`), not a plain "
+                    f"net -- assign it to a wire first and connect the wire")
+            saved_ctx, self._hoist_ctx = self._hoist_ctx, node.name
+            try:
+                ref = self._hoist_word(self._lower_expr(e), pin_w.get(pin, 1), loc)
+            finally:
+                self._hoist_ctx = saved_ctx
+            return ref.name
+
         if spec.category == "latch":
             # opt-in only; see the instantiated path for the reasoning
             if not getattr(self, "_allow_latches", False):
@@ -1591,7 +1661,7 @@ class _ModuleMixin:
             if any(n not in pin_expr for n in need):
                 flagged.append((loc, f"latch {mod} {node.name}: needs en/d/q connected"))
                 return
-            nm = lambda pin: self._peel(pin_expr[pin]).symbol.name  # noqa: E731
+            nm = lambda pin: pin_name(pin, "output" if pin == spec.pins["q"] else "input")  # noqa: E731
             latches.append(LatchItem(q=nm(spec.pins["q"]), d=nm(spec.pins["d"]),
                                      en=nm(spec.pins["en"]), inst=node.name, loc=loc))
             add_cell(nm(spec.pins["q"]))
@@ -1605,13 +1675,13 @@ class _ModuleMixin:
             qk = _enum_name(q_e.kind)
             ps = self._partselect_lhs(q_e) if qk in ("RangeSelect", "ElementSelect") else None
             if qk == "NamedValue":
-                q = self._peel(q_e).symbol.name
+                q = pin_name(qpin, "output")
             elif ps is not None:
                 q = ps[0]                                  # (root, root_width, lo, w)
             else:
                 flagged.append((loc, f"primitive {mod} {node.name}: q output is not a net/part-select"))
                 return
-            clk = self._peel(pin_expr[spec.pins["clk"]]).symbol.name
+            clk = pin_name(spec.pins["clk"], "clock")
             d = self._lower_expr(pin_expr[dpin])
             dw = pin_w.get(dpin, 1)
             # the flop's D must be a clean value-term (catalog §2.10 "no computation in D"): hoist a
@@ -1634,7 +1704,7 @@ class _ModuleMixin:
             reset = None
             reset_value = 0
             if spec.reset and spec.pins.get("rstL") in pin_expr:
-                reset = Reset(signal=self._peel(pin_expr[spec.pins["rstL"]]).symbol.name,
+                reset = Reset(signal=pin_name(spec.pins["rstL"], "reset"),
                               active=spec.reset, kind="async")
             if ps is not None:
                 # a part-select q[off+w-1:off] <= d: RECORD it; multiple per-bit/per-slice flops on the
@@ -1657,14 +1727,12 @@ class _ModuleMixin:
             if opin not in pin_expr or spin not in pin_expr or ipin not in pin_expr:
                 flagged.append((loc, f"primitive {mod} {node.name}: vcmux needs in/sel/out connected"))
                 return
-            out_e = pin_expr[opin]
-            oroot = self._peel(out_e)
-            out = oroot.symbol.name
+            out = pin_name(opin, "output")
             w, n = pin_w[opin], pin_w[spin]
             in_e = self._lower_expr(pin_expr[ipin])
             # Same FLAT one-hot lowering as the instantiated path (see there): one rule per
             # one-hot code plus an all-zero default, exactly as docs/reference/SV_PRIMITIVE_LIBRARY.md documents.
-            muxes.append(MuxItem(out=out, sel=self._peel(pin_expr[spin]).symbol.name,
+            muxes.append(MuxItem(out=out, sel=pin_name(spin),          # a concat of select bits hoists
                                  arms=tuple(Slice(in_e, i * w + w - 1, i * w) for i in range(n)),
                                  loc=loc, onehot=True))
             add_cell(out)
@@ -1687,8 +1755,8 @@ class _ModuleMixin:
                 flagged.append((loc, f"clock-gate {node.name}: enable must be a net (assign the "
                                      "gate condition to a wire first), got a compound expression"))
                 return
-            gclk = self._peel(pin_expr[gpin]).symbol.name
-            base = self._peel(pin_expr[cpin]).symbol.name
+            gclk = pin_name(gpin, "output")
+            base = pin_name(cpin, "clock")
             self._derived.append(DerivedClock(name=gclk, base=base, gate=en_expr.name, loc=loc))
             add_cell(gclk)
             return
@@ -1723,7 +1791,7 @@ class _ModuleMixin:
                     comb.extend(self._assign_lhs_operand(op, Slice(ref, off + w - 1, off), w, loc))
                 add_cell(node.name)
             else:
-                root_name = self._peel(out_e).symbol.name
+                root_name = pin_name(spec.out, "output")
                 comb.append(CombItem(lhs=root_name, rhs=rhs, loc=loc))
                 add_cell(root_name)
             return
@@ -1758,12 +1826,12 @@ class _ModuleMixin:
                     off -= w
                     comb.extend(self._assign_lhs_operand(op, Slice(clz_ref, off + w - 1, off), w, loc))
             else:
-                root_name = self._peel(d_e).symbol.name
+                root_name = pin_name(d_pin, "output")
                 comb.append(CombItem(lhs=root_name, rhs=clz_ref, loc=loc))
                 add_cell(root_name)
             # clzS_E1 (SIMD half-word CLZ): structurally unused downstream; tie to 0 + document
             if s_pin in pin_expr:
-                s_root = self._peel(pin_expr[s_pin]).symbol.name
+                s_root = pin_name(s_pin, "output")
                 sw = pin_w[s_pin]
                 tie_loc = Loc(file=loc.file, line=loc.line,
                               text=(loc.text or "") + f"  [auto-tied to 0: clzS_E1 ({sw} bits) unused]")
@@ -2048,22 +2116,32 @@ class _ModuleMixin:
         params = {p.name: self._cv_int(p.value) for p in inst.body
                   if _enum_name(p.kind) == "Parameter"}
 
-        def actual_name(pin: str) -> str:
+        def actual_name(pin: str, role: str = "strict") -> str:
             # an output-port connection wraps the external net in an Assignment lvalue
             e = conns[pin].expression
             if _enum_name(e.kind) == "Assignment":
                 e = e.left
             p = self._peel(e)
-            if not hasattr(p, "symbol"):
-                # a connection that is not a plain net -- a replication, a concatenation, an
-                # expression. Named, so it is a refusal a person can act on and not a Python
-                # AttributeError leaking out of the guard (a field report, 2026-09-03: a
-                # vectored flop's `.En({4{opvld}})` crashed instead of refusing)
-                raise NotImplementedError(
-                    f"{spec.category} {inst.name}: pin {pin} is connected to a {_enum_name(p.kind)} "
-                    f"(`{str(getattr(p, 'syntax', '')).strip()}`), not a plain net -- assign the "
-                    f"expression to a wire first and connect the wire")
-            return p.symbol.name
+            if hasattr(p, "symbol"):
+                return p.symbol.name
+            if role == "input":
+                # a compound INPUT connection (a concatenation of select bits, an expression) is
+                # hoisted into a named temp (`<inst>__tN`) -- what the refusal below tells a
+                # person to do by hand (a field report, 2026-09-04: the vectored mux's `sel`)
+                saved_ctx, self._hoist_ctx = self._hoist_ctx, inst.name
+                try:
+                    ref = self._hoist_word(self._lower_expr(e), self._port_width(conns[pin]), loc)
+                finally:
+                    self._hoist_ctx = saved_ctx
+                return ref.name
+            # a connection that is not a plain net on a pin that must be one (an output, a
+            # clock, a reset, a lane pin). Named, so it is a refusal a person can act on and
+            # not a Python AttributeError leaking out of the guard (a field report,
+            # 2026-09-03: a vectored flop's `.En({4{opvld}})` crashed instead of refusing)
+            raise NotImplementedError(
+                f"{spec.category} {inst.name}: pin {pin} is connected to a {_enum_name(p.kind)} "
+                f"(`{str(getattr(p, 'syntax', '')).strip()}`), not a plain net -- assign the "
+                f"expression to a wire first and connect the wire")
 
         def broadcast_enable(pin: str, lanes: int) -> "str | None":
             """`.En({N{x}})` with N the lane count and x a 1-bit net: ONE enable for every lane.
@@ -2103,7 +2181,7 @@ class _ModuleMixin:
             return
         if spec.category == "mux":  # encoded select: out = arms[sel]
             out = actual_name(spec.out)
-            muxes.append(MuxItem(out=out, sel=actual_name(spec.pins["sel"]),
+            muxes.append(MuxItem(out=out, sel=actual_name(spec.pins["sel"], "input"),
                                  arms=tuple(actual_expr(pin) for pin in spec.inputs), loc=loc))
             add_cell(out)
             return
@@ -2117,7 +2195,7 @@ class _ModuleMixin:
             # docs/reference/SV_PRIMITIVE_LIBRARY.md, keeps arm selection single-valued for the same reason a
             # binary mux is (the guards are distinct selector VALUES), and avoids a nested
             # ternary the word emitter cannot read.
-            muxes.append(MuxItem(out=out, sel=actual_name(spec.pins["sel"]),
+            muxes.append(MuxItem(out=out, sel=actual_name(spec.pins["sel"], "input"),   # a concat of select bits hoists
                                  arms=tuple(Slice(in_e, i * w + w - 1, i * w) for i in range(n)),
                                  loc=loc, onehot=True))
             add_cell(out)

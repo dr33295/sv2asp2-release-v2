@@ -1426,7 +1426,12 @@ class _ExprMixin:
                         and (getattr(getattr(e, "type", None), "bitWidth", 1) or 1) == 1
                         and not getattr(root.type, "isUnpackedArray", False)):
                     idxs = self._select_indices(e, subst)
-                    if len(idxs) == len(pd) and any(_mentions_laneidx(ix) for ix in idxs):
+                    # only when a genvar indexes a level BEYOND the first: `enc[i][2]` on a lane
+                    # of 3-bit elements is bit 2 of lane i's ELEMENT (a slice of the lane's
+                    # value, below), not a two-level lane read -- which registered a one-bit
+                    # view of `enc` beside its three-bit one and refused the signal (a field
+                    # report, 2026-09-04)
+                    if len(idxs) == len(pd) and any(_mentions_laneidx(ix) for ix in idxs[1:]):
                         # F27's MULTI-LEVEL sibling: `q[f(r)][c]` on `logic [R-1:0][C-1:0] q`
                         # with a genvar in an index is a two-level LANE READ `q(f(I), J)`, not a
                         # slice of a slice of the word -- the word of a 256-bit port is the F32
@@ -1475,6 +1480,26 @@ class _ExprMixin:
             # just like a value use, and lane-rolling would give every lane iteration 0's slice.
             # Record it so `_lower_generate` refuses (defect D1); the bounds themselves still fold.
             if self._genvars and (self._expr_uses_genvar(e.left) or self._expr_uses_genvar(e.right)):
+                # a window whose bounds are AFFINE in the genvar with a width the same at every
+                # iteration -- `m[2*i+2 : 2*i]`, the Booth encoder's sliding window, or
+                # `a[2*i +: 3]` -- is the word shifted right by the affine amount and masked
+                # (the runtime-base form below, with the lane index as the amount). Anything
+                # else in a bound still folds to one iteration and is recorded for the refusal
+                # (a field report, 2026-09-04)
+                try:
+                    if sk == "Simple":
+                        hi_ir, lo_ir = self._affine_ir(e.left), self._affine_ir(e.right)
+                        ws = {self._eval_affine(hi_ir, i) - self._eval_affine(lo_ir, i) + 1 for i in self._lane_range()}
+                    else:
+                        wc = self._const_of(e.right)
+                        b_ir = self._affine_ir(e.left)
+                        lo_ir = b_ir if sk == "IndexedUp" else BinOp("sub", b_ir, Const(wc - 1, 32), 32)
+                        ws = {wc} if wc is not None else set()
+                    if len(ws) == 1 and next(iter(ws)) >= 1:
+                        w = ws.pop()
+                        return BinOp("and", BinOp("shr", base, lo_ir, w), Const((1 << w) - 1, w), w)
+                except Exception:
+                    pass
                 self._genvar_folded = "slice bound"
             if sk == "Simple":                      # [hi:lo] -- left is hi, right is lo
                 hi = self._const_of(e.left)
