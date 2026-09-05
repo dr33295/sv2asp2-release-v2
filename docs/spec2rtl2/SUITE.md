@@ -77,6 +77,15 @@ verdict. These gates pin what its verdicts *mean*.
   verdicts on one fixture: a model matching the design's term is discharged by identity;
   a symbolic difference is OWED to Lean (recorded, never miscalled a failure); a concrete
   mismatch is a violation.
+- **`refmodel_gate_is_live_in_the_bounded_legs_and_absent_from_the_step`** — the `refmodel`
+  gate made real (2026-09-05, a field report with a probe from a 64×64 multiply-accumulate).
+  The lint accepted gated rules and the induction named their monitors bounded-only, but NO
+  leg asserted the fact, so a gated rule was inert everywhere: a gated `model` was always
+  UNREACHABLE and a gated property was never judged while the report read as if it were.
+  Three halves: the reporter's probe discharges by identity; a wrong expected term is OWED
+  (the rule fires); a gated property that violates from reset is caught by the base. The
+  incident's lesson is a whole family: a mechanism with a consumer and no producer passes
+  every gate that checks the consumer.
 - **`failtype_vocabulary`** — a spec written entirely with `failType(Name, T)` heads
   certifies exactly like `bad(Name, T)`: the tags join the property set, the step proves
   them, and a violation is caught and *named*. This is the vocabulary the language

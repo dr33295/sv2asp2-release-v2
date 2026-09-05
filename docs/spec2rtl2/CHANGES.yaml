@@ -872,3 +872,13 @@
   gate: [sweep:vcmux_instance_inside_a_generate]
   docs: [docs/reference/SV_FEATURE_COVERAGE.md]
 
+- id: refmodel-gate-asserted
+  date: 2026-09-05
+  status: fixed
+  found: "field report with a probe (a 64x64 multiply-accumulate, from a machine with Verilator and no Icarus): a `refmodel`-gated `model` rule could never discharge -- `no model instance is derivable ... UNREACHABLE (vacuous)` -- while ungated it grounds in the step and hits the wall on a wide datapath"
+  what: "the gate is now a FACT the bounded legs assert -- the base, the scenarios, the delivery obligation and its vacuity check, the stimulus-driven checks -- and the induction step does not; a gated rule is the bounded legs' independent oracle exactly as the methodology described it"
+  why: "the gate was half-built: the lint accepted gated rules and the induction classified their monitors as bounded-only, but NO leg asserted the fact, so a gated rule was inert everywhere -- a gated property was never judged at all while the report read as if it were (the vacuity the route exists to refuse). No corpus entry used the literal, so no verdict changes"
+  fix: "refine.py REFMODEL, prepended at the bounded solves only"
+  gate: [test_v2_refmodel_gate_is_live_in_the_bounded_legs_and_absent_from_the_step]
+  docs: [ROUTE_METHODOLOGY 24 and 21, TOOL.md]
+

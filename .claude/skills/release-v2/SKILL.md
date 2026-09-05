@@ -65,7 +65,15 @@ control/data split even when no compiler reads it), and the `dsl` rung is explai
    - **Over external symbols only**: the ports directly, plus DECLARED windows for what the
      ports do not expose. A window is a name, a domain and a prose meaning; the spec never
      defines it -- the design's linkage will. No spec-side ghost state outside `refmodel`
-     (the lint refuses it; gating is per rule and literal).
+     (the lint refuses it; gating is per rule and literal). A rule gated under `refmodel` is
+     live in the bounded legs (base, scenarios, delivery obligation) and absent from the step.
+   - **A delivered DATA value is an OBLIGATION, not a property**: `model(Port, Want, T) :- ...`
+     with `obligation_span(N)` (the lookback the expected term needs). The runner solves the
+     span window once and compares the design's delivered term with `Want`: the same term is
+     DISCHARGED BY IDENTITY, a different term is OWED to Lean (recorded, never a failure), two
+     different concrete values are a VIOLATION with a table. For a WIDE value (a 64-bit
+     product) gate the `model` rule and its `expected` helper under `refmodel`, so the wide
+     term grounds in the delivery leg only and never in the step.
    - **One named failure per kind of wrongness**: `failType(Name, T) :- ...` (or `bad`; one
      vocabulary). A run deriving a failure says which way you are wrong. Goals for everything
      that must stay reachable.
@@ -202,6 +210,7 @@ exit codes directly, never through a pipe; verify a claim before a message claim
 | `WARNING (BUDGET: the word of X ...)` / `NOT assembled` | a wide per-bit word is (or is not) built from its bits; the cost is named | pinned runs are fine; a free power-on will explode -- read bits, or a window |
 | `TIMEOUT` with `Solving: 0.00s` | grounding, not search: something is enumerated | profile (`gringo --text \| sed -E 's/[(:].*//' \| sort \| uniq -c \| sort -rn`), then digits, tokens, or `opaque_datapath.` |
 | `DARK READ: X is READ but never DERIVED` (round trip) | the print does not translate back completely | a translator gap: `--report`, and a minimised probe |
+| `FAIL obligations: no model instance is derivable at the window's end -- UNREACHABLE` | no `model(...)` atom exists at the span's last instant: the `delivered` condition never holds within `obligation_span`, or the span is shorter than the lookback | check the span against the deepest `T-k` in the rule; check the enabling condition can hold from a free start |
 | `VERILATOR COMPARED NO DEFINITE SAMPLE` / `ICARUS COMPARED ...` | the bench matched nothing (a naming mismatch, or every sample power-on dependent) | not a round trip; report it |
 | `verilator: N sample(s) not definite -- skipped` | those values depend on unreset state (the two power-on fills disagree); Icarus would print x there | expected for unreset memory cells; if a RESET register appears here, its reset is not reaching the print |
 | `the printed RTL is NOT parametric` | the two configurations differ beyond the parameter defaults | author every threshold as a parameter expression; sweep the print for numbers |

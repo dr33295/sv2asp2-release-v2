@@ -1716,7 +1716,9 @@ the design contradicts the ports somewhere.
 
 There are exactly two places where an event-driven ghost remains permitted, both because
 the enumeration wall is a *composition-scale* phenomenon: under a `refmodel` gate (a
-language mechanism the lint understands; no v2 certificate currently uses it), and inside
+language mechanism the lint understands and the bounded legs assert as a fact -- the base,
+the scenarios, the delivery obligation -- while the step does not; this is how a WIDE expected
+value is stated as a `model` without grounding it in the step), and inside
 a **unit's contract at standalone scale** — a unit's job-capture ghost proves in seconds
 standalone and never enters the composed step (Chapter 22).
 
@@ -2019,6 +2021,11 @@ document):
 
 1. **Lint and linkage lint.** The authoring subset is enforced; spec-side state outside a
    `refmodel` gate is refused; monitors over gated vocabulary are named as bounded-only.
+   The gate is a FACT the bounded legs assert and the step does not: a rule carrying the
+   literal `refmodel` is live in the base, the scenarios and the delivery obligation, and
+   absent from the induction step (since 2026-09-05 -- before that no leg asserted it, so a
+   gated rule was inert everywhere and a gated `model` could never discharge; a field
+   report's probe found it).
 2. **The base.** One solve from reset with every input free, over **K+1 instants** —
    reset occupies instant 0, so K *live* steps remain. This is not pedantry: the step's
    "K exceeds the reachable diameter" argument leans on the base having actually examined

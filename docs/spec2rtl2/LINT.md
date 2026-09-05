@@ -115,7 +115,10 @@ there), so any `bad`/`viol` whose body reads one is excluded from the step's ask
 by name — else it would be listed as vacuously "inductive." Known limitation, stated: the
 classification reads one level of direct body references; a monitor reaching the referee
 through an ungated same-instant helper is not classified. Until the reachability closure lands
-(owed, with a sabotage test), the discipline is: monitors read gated predicates directly.
+(owed, with a sabotage test), the discipline is: monitors read gated predicates directly. Since 2026-09-05 the bounded legs -- the base, the scenarios, the delivery
+obligation -- ASSERT the fact `refmodel.`, so a gated rule is live exactly there; before that
+no leg asserted it and a gated rule was inert everywhere, which is the reason a gated
+`model` obligation was always reported UNREACHABLE (a field report's probe).
 
 **Where it runs.** `refine`'s spec-scale path, per monitor file (the spec and each level's
 `.inv`). It does not run for `contract <m>.lp` (`unit_scale=True`): a unit contract's

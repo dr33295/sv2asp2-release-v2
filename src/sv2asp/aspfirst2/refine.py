@@ -86,6 +86,16 @@ class RefineResult:
 # solving
 # ---------------------------------------------------------------------------------------------
 
+#: The `refmodel` gate's FACT. A spec rule carrying the literal `refmodel` is the bounded legs'
+#: independent oracle (METHODOLOGY tenets 2 and 4, Chapter 24): live wherever every input and
+#: every instant is enumerated -- the base, the scenarios, the delivery obligation, the
+#: stimulus-driven checks -- and absent from the induction step, where state is freed and a
+#: copy would need glue. Until 2026-09-05 no leg asserted it, so a gated rule was inert
+#: EVERYWHERE: a gated `model` could never discharge (a field report's probe: "no model
+#: instance is derivable ... UNREACHABLE"), and a gated property was never judged at all.
+REFMODEL = "refmodel.\n"
+
+
 def _solve(files: list, extra: str = "", consts: dict | None = None, timeout: int = 300) -> tuple:
     """(status, atoms) -- status SATISFIABLE / UNSATISFIABLE / ERROR(msg); atoms of the last witness."""
     with tempfile.TemporaryDirectory() as td:
@@ -728,7 +738,7 @@ def refine(spec, stim, cur, prev=None, cur_inv=None, prev_inv=None, k: "int | No
 
     # 3. spec
     st, atoms = (sessA.solve_guards({"q__spec"}, GUARDS) if sessA
-                 else _solve(base, assume + proj + "some_bad :- bad(_, _).\n:- not some_bad.\n", consts))
+                 else _solve(base, REFMODEL + assume + proj + "some_bad :- bad(_, _).\n:- not some_bad.\n", consts))
     if st == "UNSATISFIABLE":
         res.say("  spec: OK -- no bad(_, _) reachable under the stimulus" +
                 (" (with the level's assumptions)" if cur_inv_p and _tags(cur_inv_text, "assume") else ""))
@@ -742,7 +752,7 @@ def refine(spec, stim, cur, prev=None, cur_inv=None, prev_inv=None, k: "int | No
     if obl_tags and symbolic:
         for t in obl_tags:
             st, atoms = (sessA.solve_guards({f"q__obl({t})"}, GUARDS) if sessA
-                         else _solve(base, assume + proj + f"some_o :- obl_owed({t}, _).\n:- not some_o.\n", consts))
+                         else _solve(base, REFMODEL + assume + proj + f"some_o :- obl_owed({t}, _).\n:- not some_o.\n", consts))
             if st == "SATISFIABLE":
                 res.owed.append(t)
                 res.say(f"  obligation {t}: OWED to Lean -- the design's term and the spec's differ as symbols "
@@ -764,7 +774,7 @@ def refine(spec, stim, cur, prev=None, cur_inv=None, prev_inv=None, k: "int | No
             need = " ".join(f"some_p :- p_assume({rp_arg(t)}, _)." for t in discharged) + " " + \
                    " ".join(f"some_p :- p_viol({rp_arg(t)}, _)." for t in p_vio) + "\n:- not some_p.\n"
             st, atoms = (sessA.solve_guards({"q__refp"}, GUARDS) if sessA
-                         else _solve(base, assume + proj + need, consts))
+                         else _solve(base, REFMODEL + assume + proj + need, consts))
             if st == "UNSATISFIABLE":
                 if "<every tag>" in discharged:
                     # level 0's blanket `assume(Tag, T) :- bad(Tag, T)`: what is proven here is
@@ -792,7 +802,7 @@ def refine(spec, stim, cur, prev=None, cur_inv=None, prev_inv=None, k: "int | No
     c_vio = _tags(cur_inv_text, "viol")
     if c_vio:
         st, atoms = (sessA.solve_guards({"q__viol"}, GUARDS) if sessA
-                     else _solve(base, assume + proj + "some_v :- viol(_, _).\n:- not some_v.\n", consts))
+                     else _solve(base, REFMODEL + assume + proj + "some_v :- viol(_, _).\n:- not some_v.\n", consts))
         if st == "UNSATISFIABLE":
             res.say(f"  guarantees: OK -- {c_vio}")
         elif st == "SATISFIABLE":
@@ -804,7 +814,7 @@ def refine(spec, stim, cur, prev=None, cur_inv=None, prev_inv=None, k: "int | No
     # 6. goals (sessB: the goals keep the stimulus horizon when --induct shortened the checks' k)
     for g in goals:
         st, atoms = (sessB.solve_guards({f"q__goal({g})"}, GUARDS) if sessB
-                     else _solve(base, assume + proj + f":- not goal({g}, _).\n", goal_consts))
+                     else _solve(base, REFMODEL + assume + proj + f":- not goal({g}, _).\n", goal_consts))
         if st == "SATISFIABLE":
             res.say(f"  goal {g}: reachable")
             if ghosts:
@@ -977,7 +987,7 @@ def refine(spec, stim, cur, prev=None, cur_inv=None, prev_inv=None, k: "int | No
         res.fail(f"totality check did not run: {st}")
     if witness:
         st, atoms = (sessA.solve_guards(set(), GUARDS) if sessA
-                     else _solve(base, assume + proj, consts))
+                     else _solve(base, REFMODEL + assume + proj, consts))
         if st == "SATISFIABLE":
             res.counterexamples.append(("witness (one trace of this level under the stimulus)",
                                         _table(d, atoms, kk, clocks)))
@@ -1033,7 +1043,7 @@ def _scenarios(res: RefineResult, d, cur_file, spec, cur_inv_text: str, clocks: 
     hyp = "% compliance at the window start\n:- bad(_, 0).\n:- viol(_, 0).\n:- assume(_, _).\n"
     proj = _projection(d, clocks)
     for name, state, inp, expect in scens:
-        common = (cur_inv_text + "\n" + plan.text + proj + symfacts + hyp
+        common = (REFMODEL + cur_inv_text + "\n" + plan.text + proj + symfacts + hyp
                   + f":- not holds({state}, 0).\n:- not holds({inp}, 0).\n")
         stA, atomsA = _solve(files, common + f":- not did({expect}).\n", {"k": 1})
         if stA != "SATISFIABLE":
@@ -1098,10 +1108,10 @@ def _delivery_obligations(res: RefineResult, d, cur_file, spec, cur_inv_text: st
                 f"{', '.join(sorted(plan.pinned))} (opaque_datapath)")
     hyp = ":- bad(_, 0).\n:- viol(_, 0).\n:- assume(_, _).\n"
     ask = (f"some_model :- model(_, _, {K}).\n:- not some_model.\n#show model/3.\n")
-    prog = cur_inv_text + "\n" + plan.text + _projection(d, clocks) + symfacts + hyp + ask
+    prog = REFMODEL + cur_inv_text + "\n" + plan.text + _projection(d, clocks) + symfacts + hyp + ask
     st, atoms = _solve(files, prog, {"k": K})
     if st == "UNSATISFIABLE":
-        st2, _ = _solve(files, cur_inv_text + "\n" + plan.text + symfacts + hyp, {"k": K})
+        st2, _ = _solve(files, REFMODEL + cur_inv_text + "\n" + plan.text + symfacts + hyp, {"k": K})
         res.fail("obligations: " + ("no model instance is derivable at the window's end -- the "
                  "obligation is UNREACHABLE (vacuous)" if st2 == "SATISFIABLE"
                  else f"the {span}-instant window is itself contradictory"))
@@ -1349,7 +1359,7 @@ def _refine_stimless(spec, cur, cur_inv=None, induct: "int | None" = None,
     # false property this way (G26); a design that ties its reset would do the same. The
     # question is asked of the base's own program, so it costs one small solve and cannot
     # drift from what the base actually runs. ----
-    st_l, _ = _solve(base_files, cur_inv_text + "\n" + plan_b.text + rst + proj + symfacts
+    st_l, _ = _solve(base_files, REFMODEL + cur_inv_text + "\n" + plan_b.text + rst + proj + symfacts
                      + "someLive :- live(_).\n:- not someLive.\n:- assume(_, _).\n#defined assume/2.\n",
                      {"k": base_h})
     if st_l == "UNSATISFIABLE":
@@ -1362,7 +1372,7 @@ def _refine_stimless(spec, cur, cur_inv=None, induct: "int | None" = None,
         res.fail(f"live: did not run: {st_l}")
         return res
     res.say("  live: OK -- some instant is judged within the base window (the monitors can fire)")
-    st, atoms = _solve(base_files, cur_inv_text + "\n" + plan_b.text + rst + proj + symfacts + ask, {"k": base_h})
+    st, atoms = _solve(base_files, REFMODEL + cur_inv_text + "\n" + plan_b.text + rst + proj + symfacts + ask, {"k": base_h})
     if st == "UNSATISFIABLE":
         res.say(f"  base: OK -- from reset, no property can fire on ANY input sequence within {K} live step(s)")
     elif st == "SATISFIABLE":
