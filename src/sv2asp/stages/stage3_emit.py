@@ -400,7 +400,7 @@ def _value_bits(ch: Expr, cap_w: int, widths: dict[str, int] | None) -> int | No
 def _lane_domains(ndim: int, pdims: tuple, lanes: int, lane_hi: int | None,
                   bound: tuple[bool, ...], lane_lo: int = 0, lane_step: int = 1
                   ) -> list[tuple[int, int, int, int]]:
-    """Which lane variables need an explicit domain literal, and over what extent.
+    r"""Which lane variables need an explicit domain literal, and over what extent.
 
     Returns ``(position, lo, hi, step)`` per literal, meaning
     ``_LANEVARS[position] = lo..hi-1`` and, for a stride above 1, ``(I - lo) \ step = 0``.
@@ -430,7 +430,7 @@ def _lane_domains(ndim: int, pdims: tuple, lanes: int, lane_hi: int | None,
 
 
 def _lane_dom_lits(doms: list[tuple[int, int, int, int]]) -> list[str]:
-    """Render `_lane_domains`' choices as body literals: the binding range, then the stride test
+    r"""Render `_lane_domains`' choices as body literals: the binding range, then the stride test
     (`I \ 2 = 0`, or `(I - 1) \ 2 = 0` off a non-zero start) when the loop steps by more than 1."""
     out: list[str] = []
     for i, lo, hi, step in doms:
@@ -2742,8 +2742,17 @@ def _emit_latch(item, out: _Out) -> None:
     out.rule(f"val({item.q}, V, T+1)", [f"val({item.en}, 0, T+1)", f"val({item.q}, V, T)"])
 
 
-def _emit_mux(item, out: _Out, widths: dict | None = None) -> None:
+def _emit_mux(item, out: _Out, widths: dict | None = None, lane_dims: dict | None = None,
+              lane_elem_w: dict | None = None, bitvec_signals=frozenset(), shapes: dict | None = None) -> None:
     out.construct(_prov(item.loc, f"mux {item.out}"))
+    # A MUX INSIDE A GENERATE (a field report with a probe, 2026-09-04): its output is a
+    # per-iteration local -- a lane -- its arms read their lane, and its selector concat was
+    # hoisted into a per-lane temp. The rule is then per lane: head `out(I)` with the lane's
+    # domain, arms rewritten to read lane I, the selector read by its per-bit atoms when it is
+    # a per-bit lane (`val(sel(I, k), 1, T)` for the one-hot code) or as its per-lane word.
+    if (lane_dims or {}).get(item.out) == 1:
+        _emit_mux_lane(item, out, widths or {}, lane_dims, lane_elem_w or {}, bitvec_signals, shapes)
+        return
     # LOUD MESSAGE when the arms do not cover the selector (D4). One rule per arm, guarded by
     # `val(sel, i, T)`, is total only if every representable selector value has an arm -- the
     # condition `2 ^ selWidth <= arms`, proven as `mux_total_iff`. A MUX3 on a 2-bit select
@@ -2769,6 +2778,40 @@ def _emit_mux(item, out: _Out, widths: dict | None = None) -> None:
         out.rule(f"val({item.out}, {v}, T)", [f"val({item.sel}, {code}, T)", *lits])
     if _onehot:                                    # defensive all-zero select -> 0
         out.rule(f"val({item.out}, 0, T)", [f"val({item.sel}, 0, T)"])
+
+
+def _emit_mux_lane(item, out: _Out, widths: dict, lane_dims: dict, lane_elem_w: dict,
+                   bitvec_signals, shapes) -> None:
+    """The per-lane form of `_emit_mux` (see there)."""
+    ew = lane_elem_w.get(item.out, 1) or 1
+    lanes = max(1, widths.get(item.out, ew) // ew)
+    dom = _lane_dom_lits(_lane_domains(1, (), lanes, None, (False,)))
+    lh = _lane_term(item.out, "I")
+    onehot = getattr(item, "onehot", False)
+    sel_lane = lane_dims.get(item.sel) == 1
+    sw = (lane_elem_w.get(item.sel, 1) or 1) if sel_lane else (widths.get(item.sel, 1) or 1)
+    covered = len(item.arms) + 1 if onehot else len(item.arms)
+    if sw <= 16 and (1 << sw) > covered:
+        out.warning(item.loc, f"mux {item.out}: selector `{item.sel}` is {sw} bits per lane ({1 << sw} values) "
+                              f"but only {covered} are covered"
+                              + (" (the one-hot codes plus all-zero)" if onehot else f" ({len(item.arms)} arms)")
+                              + " -- the output is UNBOUND for the rest, so a property over it passes VACUOUSLY on any trace reaching them")
+    sel_bits = sel_lane and item.sel in (bitvec_signals or frozenset())
+
+    def sel_lits(code: int) -> list:
+        if sel_bits:                         # per-bit selector atoms: the code, bit by bit
+            return [f"val({_lane_term(item.sel, f'I, {j}')}, {(code >> j) & 1}, T)" for j in range(sw)]
+        return [f"val({_lane_term(item.sel, 'I') if sel_lane else item.sel}, {code}, T)"]
+    sh = {n: Shape.INDEXED for n, d in lane_dims.items() if d == 1}
+    for i, arm in enumerate(item.arms):
+        ctx = _Ctx(out.used)
+        a = _index_lane_refs(arm, lane_dims)
+        lits, v = _word_body(a, "T", ctx, sh, lane_dims, lane_ctx=True)
+        out.used |= ctx.used
+        code = (1 << i) if onehot else i
+        out.rule(f"val({lh}, {v}, T)", [*dom, *sel_lits(code), *lits])
+    if onehot:
+        out.rule(f"val({lh}, 0, T)", [*dom, *sel_lits(0)])
 
 
 # --------------------------------------------------------------------------
@@ -4308,7 +4351,7 @@ def emit(design: Design, analysis: Analysis, *, k: int = 8, style: str = "v1",
                                             packed_dims=design.packed_dims, enum_of=enum_of,
                                             bitvec_word_form=analysis.bitvec_word_form))
     for item in design.muxes:
-        _guard(out, item.loc, f"mux {item.out}", lambda item=item: _emit_mux(item, out, widths))
+        _guard(out, item.loc, f"mux {item.out}", lambda item=item: _emit_mux(item, out, widths, lane_dims, lane_elem_w, analysis.bitvec_signals, shapes))
     for item in design.latches:
         _guard(out, item.loc, f"latch {item.q}", lambda item=item: _emit_latch(item, out))
     for item in design.inferred_latches:
@@ -4462,7 +4505,7 @@ def _spec_rules(design: Design, spec: str, *, bitvec: bool = False) -> tuple[lis
                                              bitvec_word_form=analysis.bitvec_word_form,
                                           packed_dims=design.packed_dims))
     for item in design.muxes:
-        _guard(out, item.loc, f"mux {item.out}", lambda item=item: _emit_mux(item, out, widths))
+        _guard(out, item.loc, f"mux {item.out}", lambda item=item: _emit_mux(item, out, widths, lane_dims, lane_elem_w, analysis.bitvec_signals, shapes))
     for item in design.latches:
         _guard(out, item.loc, f"latch {item.q}", lambda item=item: _emit_latch(item, out))
     for item in design.inferred_latches:

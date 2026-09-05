@@ -862,3 +862,13 @@
   gate: [sweep:hand_wired_fan_in_from_many_lanes, test_bitvec_refusal_names_the_leaf]
   docs: [docs/reference/SV_FEATURE_COVERAGE.md]
 
+- id: mux-inside-a-generate
+  date: 2026-09-04
+  status: fixed
+  found: "the third report's FOURTH update at 875f5c7, with a probe -- the design's sole remaining problem: a vectored mux instantiated INSIDE a generate whose output is a per-iteration local read as `tmp(I)` while the mux emitted the word rule `val(tmp, ..)` -- a dark read"
+  what: "the mux emitter has a per-lane form: when the output is a one-level lane, the head is `out(I)` with the lane's domain, the arms are rewritten to read lane I, and the selector is read by its per-bit atoms when it is a per-bit lane (the hoisted selector concat) or as its per-lane word; the coverage warning measures the selector per lane (2 bits, not 10)"
+  why: "the mux emitter had no lane awareness -- the same disease the boolean emitter had today, one construct over; reading the selector's bit atoms directly sidesteps the inner word bridge, which is emitted only for consumers the stage-2 classifier sees"
+  fix: "stage3_emit _emit_mux_lane; both call sites pass the lane tables"
+  gate: [sweep:vcmux_instance_inside_a_generate]
+  docs: [docs/reference/SV_FEATURE_COVERAGE.md]
+
