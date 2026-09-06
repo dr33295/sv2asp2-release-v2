@@ -455,6 +455,14 @@ class _Ctx:
             w = width_of(self.d, t)
             inner = w if _same_width(w, ctx_w) else None
             return f"{self.leaf(t[1], inner)} {BIN_OPS[op]} {self.leaf(t[2], inner)}"
+        if op in ("shl", "shr"):
+            # a logical shift's LEFT operand is context-determined (the LRM's sizing rule, the
+            # same as a ring operator's operands); its amount is self-determined. Passing the
+            # context lets a same-width ring expression inline as the shifted value -- the
+            # compressor tree's `maj(x, y, z) << 1` printed as five hoisted wires before this
+            w = width_of(self.d, t)
+            inner = w if _same_width(w, ctx_w) else None
+            return f"{self.leaf(t[1], inner)} {BIN_OPS[op]} {self.leaf(t[2])}"
         if op in BIN_OPS:
             return f"{self.leaf(t[1])} {BIN_OPS[op]} {self.leaf(t[2])}"
         if op == "ashr":

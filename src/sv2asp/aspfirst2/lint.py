@@ -15,7 +15,7 @@ import tempfile
 from .libgen import LIB_DIR
 from .load import Design, SubsetError, load, load_text
 
-WARN = {"sel_not_1bit"}
+WARN = {"sel_not_1bit", "dead_net"}
 
 
 def clingo_bin() -> str:
@@ -129,6 +129,74 @@ def comb_loops(d: Design) -> list:
     return [f"lint(comb_loop({n}))" for n in sorted(on_cycle)]
 
 
+def view_findings(d: Design) -> list:
+    """`obligation_view(N, E)` is checked like a definition: N must be a computed DATA net (it
+    has a def and is declared data -- a register output or a control net has no view), every
+    name E reads must be declared, and E's width must be N's. Findings in the ASP lint's
+    spelling: view_target(N), view_leaf(N, X), view_width(N, WE, WN)."""
+    from .printer import width_of              # the printer's width rule, the one the print obeys
+    wires = set(d.wires())
+
+    def names(t) -> list:
+        if isinstance(t, str):
+            return [t]
+        if isinstance(t, tuple):
+            if t and t[0] in ("k", "str"):        # a constant carries no name
+                return []
+            return [x for a in t[1:] for x in names(a)]
+        return []
+
+    out = []
+    for n, e in d.views.items():
+        if n not in d.defs or n not in d.data:
+            out.append(f"lint(view_target({n}))")
+            continue
+        for x in names(e):
+            if x not in wires:
+                out.append(f"lint(view_leaf({n}, {x}))")
+        try:
+            we = width_of(d, e)
+        except Exception:                       # an expression the width rule cannot type
+            we = None
+        wn = d.width_of(n)
+        if isinstance(we, int) and isinstance(wn, int) and we != wn:
+            out.append(f"lint(view_width({n}, {we}, {wn}))")
+        elif we is None:
+            out.append(f"lint(view_width({n}, unknown, {wn}))")
+    return out
+
+
+def dead_data_nets(d: Design) -> list:
+    """A DATA net with a definition that nothing reads -- no definition, no instance pin, no
+    rule, no output port, no view -- is dead: it costs nothing in the control solves (a token)
+    but its real term is built in the delivery leg for nobody, and it can hold its cone alive
+    there. Finding: lint(dead_net(N)), a WARNING (a dead net makes no design wrong). Found on
+    the optimized multiplier's level-7 propagate net (2026-09-05)."""
+    import re as _re
+    wires = set(d.wires())
+
+    def names(t) -> list:
+        if isinstance(t, str):
+            return [t] if t in wires else []
+        if isinstance(t, tuple):
+            if t and t[0] in ("k", "str"):
+                return []
+            return [x for a in t[1:] for x in names(a)]
+        return []
+
+    read = set()
+    for e in d.defs.values():
+        read |= set(names(e))
+    for e in d.views.values():
+        read |= set(names(e))
+    read |= {p.name for p in d.outputs()}
+    for i in d.insts:
+        read |= {v for v in i.pins.values() if isinstance(v, str)}
+    for r in d.rules:
+        read |= {w for w in wires if _re.search(r"\b" + _re.escape(w) + r"\b", r.text)}
+    return [f"lint(dead_net({n}))" for n in sorted(d.defs) if n in d.data and n not in read]
+
+
 def ite_arm_widths(d: Design) -> list:
     """`lint(ite_arm_width(E))` -- the two arms of an `ite` must be the same width.
 
@@ -203,7 +271,8 @@ def lint_design_full(d: Design, design_path: "str | pathlib.Path") -> tuple:
     if status == "ERROR":
         return [f"clingo could not read the design: {atoms[0][:400]}"], [], ""
     findings = sorted(set(a for a in atoms if a.startswith("lint("))
-                      | set(comb_loops(d)) | set(ite_arm_widths(d)) | set(derived_clock_misuse(d)))
+                      | set(comb_loops(d)) | set(ite_arm_widths(d)) | set(derived_clock_misuse(d))
+                      | set(view_findings(d)) | set(dead_data_nets(d)))
     errs = [a for a in findings if not any(a.startswith(f"lint({w}(") for w in WARN)]
     warns = [a for a in findings if a not in errs]
     roles = sorted(a for a in atoms if a.startswith("bnd(") or a.startswith("dat("))

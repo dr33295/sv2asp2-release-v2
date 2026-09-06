@@ -505,7 +505,7 @@ def _enum_of(w):
 def plan_step(d: Design, clocks: set, ghosts: dict, K: int, free_reset: bool = False,
               data: set = frozenset(), free_state: bool = True,
               pin_high: frozenset = frozenset(), skip_state: frozenset = frozenset(),
-              extra_resets: frozenset = frozenset()) -> StepPlan:
+              extra_resets: frozenset = frozenset(), pin_values: dict | None = None) -> StepPlan:
     """The step's generated program: `#const k`, the time axis, every state element FREE at T=0,
     every input free at every instant (reset nets held released unless `free_reset`), the ghost
     projection `ghost_state/2`, and the unique-states constraint (a window with a repeated full state can
@@ -543,6 +543,12 @@ def plan_step(d: Design, clocks: set, ghosts: dict, K: int, free_reset: bool = F
             # stays single-candidate along the value path
             L.append(f"val({n}, 1, T) :- gtime(T).")
             p.pinned.append(n)
+            continue
+        if pin_values and n in pin_values:
+            # the delivery obligation's CORNER: a control input the datapath reads is held at one
+            # value over the window, so the term family it would fork stays single-candidate
+            # (the caller enumerates the corners; this plan is one of them)
+            L.append(f"val({n}, {pin_values[n]}, T) :- gtime(T).")
             continue
         e = _enum_of(port.width)
         if e:

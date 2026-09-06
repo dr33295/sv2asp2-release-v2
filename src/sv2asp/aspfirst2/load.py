@@ -17,7 +17,7 @@ from .model import CELLS, FUNCS, OPS, Design, Inst, Net, Port, Rule, Step
 FACT_PREDS = {"module": 1, "port": 3, "net": 2, "enum_member": 3, "param": 2, "def": 2,
               "inst": 2, "pin": 3, "iparam": 3, "abstract": 1, "data": 1, "mparam": 3,
               "net_lane": 3, "port_lane": 4, "def_lane": 3, "inst_lane": 3, "arch_mem": 3, "arch_reg": 2,
-              "opaque_datapath": 0}
+              "opaque_datapath": 0, "obligation_view": 2}
 def sv_name(term):
     """The IDENTIFIER a name term denotes.
 
@@ -1064,6 +1064,19 @@ def load_text(text: str, params: "dict | None" = None) -> Design:
             d.defs[n] = e
             d.def_order.append(n)
             d.src[("def", n)] = (line, stmt)
+        elif pred == "obligation_view":
+            # the delivery obligation reads N through E (refine._view_variant); checked like a def
+            n, e = args
+            if not is_symbol(n):
+                raise SubsetError(line, "obligation_view(Net, Expr): Net is a plain name", stmt)
+            e = _lanify(e, d.lanes, (None, None), line, stmt, env)
+            if raw is not None:
+                e = resolve_term(e, env, line, stmt)
+            _check_expr(e, line, stmt)
+            if n in d.views:
+                raise SubsetError(line, f"{n} has two obligation views", stmt)
+            d.views[n] = e
+            d.src[("view", n)] = (line, stmt)
         elif pred == "inst":
             i, c = args
             if not is_symbol(c):

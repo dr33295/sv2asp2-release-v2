@@ -882,3 +882,143 @@
   gate: [test_v2_refmodel_gate_is_live_in_the_bounded_legs_and_absent_from_the_step]
   docs: [ROUTE_METHODOLOGY 24 and 21, TOOL.md]
 
+- id: owed-terms-printed
+  date: 2026-09-05
+  status: fixed
+  found: "building new_mul: the owed verdict said only that the terms differ as symbols; printing them showed the design delivering the CONSTANT 0 -- the contract's obligation did not require live across its window, so a reset inside it was a legal window in which the design rightly delivered nothing"
+  what: "an owed obligation prints both terms -- `design delivers:` and `spec requires:` -- so a person can judge one function spelled two ways from two functions"
+  why: "the verdict OWED is the ordinary outcome for a structural design, and it hid a wrong contract behind the same words; the two lines cost nothing and caught a defect the first time they existed"
+  fix: "refine.py _delivery_obligations"
+  gate: [test_v2_owed_obligation_prints_both_terms]
+  docs: []
+
+- id: opaque-pins-selectors
+  date: 2026-09-05
+  status: fixed
+  found: "building new_mul: `obligations: enable/isolation input(s) held active for the value path: dpSize_M1, high_M1, low32_M1, sgnOp_M1, subOp_M1, unsgn_M1` -- the directive pinned every one-bit input that gates data, so the product obligation was computed at ONE control corner"
+  what: "under opaque_datapath a control bit that SELECTS between data paths (a signedness, a half select, an add/subtract) is treated as an enable and pinned active; the obligation then covers one corner of the control space"
+  why: "the directive's pinning rule cannot tell an enable (whose active value is the only interesting one) from a selector (whose every value is); the corners fall to the round trip and to Lean, which is honest but weaker than the runner could be. And the same distinction is a GROUNDING wall the other way: a selector left FREE (no directive, or not wired to an ite at the top of a data def) forks the term family of every net that reads it, and the grounder does not know the readers share one bit -- new_mul's 32-row Booth array grounded 2^rows candidates for one sum (66k rules at 2 digits, no end at 4)"
+  fix: "the delivery obligation ENUMERATES the control inputs the datapath reads (every input reachable from a data net's def or a data register's d pin through non-data defs; clocks, data, pinned enables and the reset cone excluded) -- one linear solve per assignment, the bits held constant over the window, the verdict per corner (identity at all / owed at M of N with the first corner's terms / violated or dark AT a named corner); above OBLIGATION_CORNER_BUDGET (256) refused by name. Only en-pin inputs are pinned active now; the ite-selector half of `_opaque_pins` is gone. new_mul: 64 corners, level 1 in 3.7 min, the Booth level in 7.2 min; the three 32-bit siblings unchanged (one corner, the enable pinned)"
+  gate: [test_v2_delivery_obligation_enumerates_selector_corners]
+  docs: [ROUTE_METHODOLOGY.md ch. 24, TOOL.md, LEARNINGS.md, spec2rtl-v2 skill, release-v2 skill]
+
+- id: lint-wide-bare-retired
+  date: 2026-09-05
+  status: fixed
+  found: "building new_mul's Booth level: the lint refused `k(\"6148914691236517205\", 64)` -- the 64-bit correction-row mask, written exactly as hard rule 4 demands -- as `wide_bare`"
+  what: "the lint's `wide_bare` rule compared the constant's value with `>= 2147483647`; in clingo a string orders above every number, so the rule fired on the QUOTED spelling and could never see a bare one (a bare number at or above 2^31 is not representable, and the loader refuses it by name before the lint runs)"
+  why: "a check that fires on the correct spelling and cannot fire on the wrong one is the inverse of a gate; the real guard is the loader's `k(V, ..): a value >= 2^31 must be a string (hard rule 4)`"
+  fix: "the rule is retired from lib/aspfirst/aspfirst_lint.lp with the reason in place; the loader's refusal stands"
+  gate: [test_v2_wide_constant_quoted_lints_clean]
+  docs: [LINT.md]
+
+- id: obligation-view
+  date: 2026-09-05
+  status: fixed
+  found: "new_mul's compressor-tree level (2b): the certificate's delivery obligation made clingo ABORT at its first corner (exit 134, 120 MB of witness written before it died); base, step and scenarios were green, both simulators agreed with the design on every sample"
+  what: "the delivery leg evaluates every data net's REAL term, and clingo's terms are trees with no sharing: a level-8 compressor output carries 3^8 copies of every row, and every intermediate net is stored too -- exponential in the tree's depth, whatever the number widths (2a's add chain grew linearly and certified in 7 minutes)"
+  why: "a tree-shaped datapath cannot have its real terms ground in clingo, by construction; the one comparison the delivery leg makes for it -- design term = specification term -- belongs to Lean, where the tree's correctness lives anyway (the compressor lemma). The user's ruling: 'if you ground large numbers it won't work... the size would be bad in clingo'"
+  fix: "the design fact `obligation_view(N, E)`: the delivery leg's copy of the design reads N through E; N's definition and every definition ONLY it reached (the tree's intermediates) are dropped (_view_variant -- a net any other reader needs is kept: a def outside the cone, an instance pin, a rule, an output port, the view's own leaves); the substitution is reported and owed to Lean as view(N). Loader fact, lint checks (a computed data net; declared leaves; the net's width), schema gloss, composer refusal inside a child by name, printer and round trip untouched. new_mul's tree level reads product_M1 as the chain of adds 2a proved; Lean carries tree = chain (tree_correct) and chain = specification (booth64_correct)"
+  gate: [test_v2_obligation_view_reads_the_view_and_owes_it, test_v2_obligation_view_refusals]
+  docs: [ROUTE_METHODOLOGY.md ch. 24, TOOL.md, LEARNINGS.md, spec2rtl-v2 skill, release-v2 skill, schema]
+
+- id: roundtrip-per-bit-fallback-width
+  date: 2026-09-05
+  status: fixed
+  found: "new_mul's tree level: ROUNDTRIP FAILED with `level1_0_sum @T=0: authored=0 modular=None` on 748 samples while Verilator and Icarus each agreed with the design on every definite sample"
+  what: "the harness rebuilds a translated per-bit net's word from its bit atoms, but only for widths 2..64; the translator models the 128-bit compressor nets per-bit (their only consumers are bitwise), so on the translated side they had no word at all and every sample of them was a mismatch"
+  why: "the fallback's word rebuild (`_word_from_bits`) is wide-safe above 30 bits already; the cap was an unstated assumption that nothing wider than 64 bits is per-bit, false for any 128-bit product datapath"
+  fix: "the fallback applies at any width >= 2; the tree level's round trip then agrees on all 2871 samples"
+  gate: [test_v2_roundtrip_per_bit_fallback_at_128_bits]
+  docs: [TOOL.md]
+
+- id: solve-error-capture
+  date: 2026-09-05
+  status: fixed
+  found: "the tree level's failing corner was reported as `ERROR: r in any rule head: assume(#Anon0,#Anon1)` -- the tail of clingo's informational notes, not the cause; the cause (an abort, exit 134, no text at all) was only found by re-running the corner by hand"
+  what: "_solve kept the LAST 600 characters of clingo's stderr, and clingo prints its `atom does not occur in any rule head` notes last; separately, clingo's exit codes 65 (error) and 33 (out of memory) carry the INTERRUPTED bit and were read as the runner's own time limit"
+  why: "fail-loud is worthless if the loud part is the wrong 600 characters; a diagnosis that needs a by-hand rerun is a report that failed"
+  fix: "_solve_error: the FIRST lines matching error/exception/traceback/abort, then the tail; exit 134 named as an abort (no text; terms too large -- declare an obligation_view), exit 33 as out of memory, exit 65 no longer a timeout"
+  gate: [test_v2_solve_error_names_the_cause]
+  docs: [TOOL.md]
+
+- id: print-shift-operand-context
+  date: 2026-09-05
+  status: fixed
+  found: "the user's reading of new_mul's mul64_tree.sv: every compressor carry `maj(x, y, z) << 1` was printed as FIVE hoisted `__e` wires (210 in the file; 272 in booth_production32.sv)"
+  what: "the printer gave a logical shift's left operand no context width, so a ring expression there was hoisted, and its own ring sub-expressions with it; only ring operators and ternary arms passed the context down"
+  why: "the LRM sizes a logical shift's LEFT operand by the context, exactly as it sizes a ring operator's operands (the amount is self-determined), so the same inlining rule applies; a print is the deliverable and its legibility is the thing being reviewed"
+  fix: "expr passes the context width to the shifted value of shl/shr; `(((x & y) | (x & z)) | (y & z)) << 8'd1` is one assign. Six committed prints regenerated (the three 32-bit siblings, new_mul's three) and each entry round-tripped under Icarus -- which exposed TRANSLATOR F55 (notes/WORKLIST.md): the one-line carry had no per-bit lowering and was dark at exit 0; fixed in the translator, not by backing the printer off (the user's call)"
+  gate: [test_v2_print_inlines_a_ring_expression_under_a_shift]
+  docs: [ROUTE_METHODOLOGY.md 27.1]
+
+- id: roundtrip-projection-ships-funcs
+  date: 2026-09-05
+  status: fixed
+  found: "new_mul's optimized level (no adder anywhere: a prefix structure): ROUNDTRIP FAILED with `row_narrow_14 @T=0: authored=... modular=None` on every per-bit net above 30 bits, while Icarus agreed with the design on all 4070 samples"
+  what: "the harness rebuilds a translated per-bit word with @add/@shl above 30 bits, and the translator ships only the @funcs the design's own rules use; a design with no adder shipped no @add, clingo's `operation undefined` is an info line that drops the rule instance, and every rebuilt word vanished silently -- the rebuild's own docstring assumed `a design that wide uses them`"
+  why: "a projection that depends on the design under test shipping the projection's helpers is a hidden coupling, and its failure mode is silence"
+  fix: "the projection for a translated side appends render_script({add, shl}) itself"
+  gate: [test_v2_roundtrip_word_rebuild_needs_no_adder_in_the_design]
+  docs: [TOOL.md]
+
+- id: view-joint-fixpoint
+  date: 2026-09-05
+  status: fixed
+  found: "the optimized level's certificate: each obligation_view dropped ONE definition (`sum_M1 ... 1 definition(s) only it reached are dropped (level8_0_sum)`) and the delivery leg timed out on the exponential tree after all"
+  what: "the exclusive-cone computation ran per view: a level-7 compressor output read by BOTH viewed siblings (sum_M1 and carry_M1) was kept because the other reader was not in that view's removed set"
+  why: "several views over one structure must be dropped together or the structure survives through its shared nets"
+  fix: "one joint fixpoint over every view; the report attributes each dropped net to the first view whose cone holds it (67 for sum_M1, 1 for carry_M1, 9 for product_M2 on the optimized level)"
+  gate: [test_v2_obligation_view_reads_the_view_and_owes_it]
+  docs: [TOOL.md]
+
+- id: solve-child-outlives-timeout
+  date: 2026-09-05
+  status: open
+  found: "the optimized level's first corner: the runner reported `TIMEOUT after 300s (clingo's own time limit)` while its clingo child was found alive 85 minutes and 9.6 GB later, parented by the runner's own python; the report's timeout branch fired only because the child was killed by hand (exit -9 carries the interrupted bit)"
+  what: "clingo's --time-limit bounds SOLVING, not grounding, and something kept the runner's subprocess timeout from ending the child while it ground; a killed profiling run of the same corner left sixty-four solvers and their zombie parents behind"
+  why: "a runner whose cap does not end its child leaves the machine to the user (the 2026-09-02 incident, again); a grounding wall must be a loud, bounded refusal"
+  fix: "planned: launch clingo in its own process group and kill the group on timeout; report a grounding that exceeds the cap as `GROUNDING WALL` with the corner named; gate: a fixture whose grounding cannot finish inside the cap must leave no process behind"
+  gate: []
+  docs: [TOOL.md]
+
+- id: view-dead-readers
+  date: 2026-09-05
+  status: fixed
+  found: "the optimized multiplier's certificate: with three obligation views the delivery leg still never finished grounding at its first corner; the captured corner program was dominated by the Kogge-Stone propagate nets (val(ks_p3..) 19410 of the first 20900 val atoms); the view had dropped exactly nine definitions, the eight generate nets and the carries, and none of the propagates"
+  what: "the generator emitted a level-7 propagate net nothing read; the view's exclusive-cone rule keeps a definition while any reader survives, and that dead reader was never in the cone, so it held ks_p6 and through it every propagate below -- each references the one below twice, an exponential term over the viewed sum and carry"
+  why: "a net nothing observes cannot change a verdict; a dead reader must not hold a definition in the leg that exists to shed exactly such terms"
+  fix: "_view_variant marks the LIVE nets first (reachable from an output, an instance pin, a rule or a view's leaves through definitions, never through a viewed net's own definition) and counts only live readers when deciding whether a cone definition is dropped"
+  gate: [test_v2_obligation_view_ignores_a_dead_reader]
+  docs: [TOOL.md, LEARNINGS.md]
+
+- id: lint-dead-net
+  date: 2026-09-05
+  status: fixed
+  found: "the same run: a data net with a definition and no reader passed the lint silently ('OK: in the authoring subset, no static findings') while it cost the certificate its delivery leg"
+  what: "no check asked whether a computed data net is read by anything"
+  why: "a dead net is cheap everywhere but the delivery leg, where its real term is built for nobody; the author should be told, by name"
+  fix: "lint.dead_data_nets: lint(dead_net(N)) for a data net with a def that no definition, view, instance pin, rule or output reads -- a WARNING; the multiplier's generator no longer emits the dead ks_p7 (l3.lp regenerated: 16 adder nets, print and round trip green)"
+  gate: [test_v2_obligation_view_ignores_a_dead_reader]
+  docs: [TOOL.md]
+
+- id: export-refmodel-gate
+  date: 2026-09-05
+  status: open
+  found: "new_mul's Booth level: `sv2asp2 export spec.lp export_scenario.lp l2a.lp` printed `exported 0 obligation(s) (all discharged by identity)` -- for a Booth array against a product, which cannot be identity"
+  what: "export_lean's solve never asserts the `refmodel` fact the bounded legs assert (refmodel-gate-asserted, step 123), so every `model` rule gated under `refmodel` is inert there, no `obl/4` atom exists, and the empty set is reported as `all discharged by identity`; level 1's earlier identity verdict from the export was vacuous by the same route"
+  why: "the same defect as the bounded legs' one leg over: a gate that no leg asserts turns a proof obligation into silence, and the message turns the silence into a green; the export is the Lean bridge, so this is the one place the route's owed obligations reach a prover"
+  fix: "planned: prepend REFMODEL to the export's extra program; and report `no obligation arose` LOUDLY (a non-zero exit) when no obl/4 atom exists at all, distinct from `every obligation was identity`"
+  gate: []
+  docs: [LEAN.md sec. 4]
+
+- id: ladder-status-without-file
+  date: 2026-09-05
+  status: open
+  found: "building new_mul: `ladder status` on a folder with no ladder.yaml crashes with a FileNotFoundError traceback"
+  what: "the status verb should say the file is missing and name `ladder init`"
+  why: "a traceback is not a message; every other verb refuses by name"
+  fix: ~
+  gate: []
+  docs: []
+

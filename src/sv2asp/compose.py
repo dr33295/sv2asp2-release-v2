@@ -339,11 +339,14 @@ def dark_terms(reads: set[str], derived: set[str], driven: set[str]) -> list[str
         if indexed and fam in word_derived and fam not in functor_derived:
             out.append(t)                 # word-bridged, read as a cell: F7's shape
             continue
-        if t in derived or fam in functor_derived:
-            # derived directly, or covered by an INDEXED head of the same family. The second
-            # half holds for a BARE read too, and must: the lane<->word bridge derives
-            # `val(m(I), ..)` per bit and assembles the word `val(m, ..)` from it, so requiring
-            # `indexed` here flags every per-bit signal read as a word (`bitvec_word_form_demo`).
+        if t in derived or (indexed and fam in functor_derived):
+            # derived directly, or an INDEXED read covered by an indexed head of the same family.
+            # A BARE read of a per-bit family is NOT covered by its bit heads: the word exists
+            # only where the lane<->word bridge assembles it, and that bridge's head `val(m, ..)`
+            # is in `derived` when it does (`bitvec_word_form_demo`). Before 2026-09-05 the bare
+            # read passed on the bit heads alone, so a word read of a per-bit net with NO bridge
+            # -- a compressor carry's inline `maj(x,y,z) << 1` reading the top Booth row -- was
+            # dark at exit 0 with coverage OK (F55).
             continue
         if t in driven or fam in driven:
             continue                      # an input / externally driven: the scenario drives it

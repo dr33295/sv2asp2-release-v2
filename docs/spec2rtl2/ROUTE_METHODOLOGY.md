@@ -2123,10 +2123,49 @@ mint the tokens. This is sound because those solves' claims are UNSAT claims ("n
 violation exists") and tokens over-approximate every value the severed nets could compute:
 if nothing bad happens even with the datapath arbitrary, nothing bad happens with the real
 one. The **delivery obligation** — the one check that genuinely needs the computed values
-— instead pins the enable and isolation *inputs* active as facts, so the grounder prunes
-the idle branches itself and the value path grounds single-candidate. That pinned path is
-exactly the path a delivery takes anyway: a delivery forces its own diagonal of valid
-bits.
+— instead pins the enable *inputs* (those wired to a data register's enable pin) active
+as facts, so the grounder prunes the idle branches itself. That pinned path is exactly
+the path a delivery takes anyway: a delivery forces its own diagonal of valid bits.
+
+A control input the datapath *reads* is a different animal, and it is handled the same
+way with or without the directive. Think of a multiplier's subtract bit: it is not an
+enable, since both of its values deliver something, and the two deliveries are different
+functions. Pinning it active would prove the add and never look at the subtract. Leaving
+it free is worse in a way that is easy to miss: in the symbolic reading each net that
+reads the bit gets one candidate term per value of it, and the grounder does not know
+that thirty-two rows all read the *same* bit, so it grounds the cross product — a chain of
+adds over thirty-two rows becomes two-to-the-thirty-two ground candidates for one sum,
+and the solve never starts (this is how the 64-bit multiply-accumulate entry found it: at
+two rows, sixty-six thousand rules; at four, no end). The runner therefore enumerates
+those inputs: it walks back from every data net's definition and every data register's
+data pin to the inputs, and runs the delivery obligation once per assignment of them,
+each held constant over the window. Each corner is exactly the single-candidate solve
+the pinned path always was, and the union of the corners is the whole control space,
+which is strictly more than one pinned corner ever covered. The report counts the
+corners and names the inputs; identity is claimed only when every corner is identity; a
+violation names its corner. Above two hundred and fifty-six corners it refuses by name
+rather than running for hours, because the count is exponential in the number of inputs
+the datapath reads — a design that far past the budget is asking a Lean question, not a
+runner question.
+
+There is one shape of datapath the delivery obligation cannot evaluate at all, and it is the
+shape every production multiplier has: a *tree*. Clingo's terms are trees with no sharing.
+An add chain's term grows linearly, one row per link, and the 64-bit multiply-accumulate's
+chain level certified in seven minutes. A compressor tree's output at level eight carries a
+copy of everything below it — three to the eighth copies of every row — and every
+intermediate net is stored too; clingo aborted mid-witness on the first corner after writing
+120 megabytes, with no error text, because an out-of-memory abort prints none. No width
+setting or budget reaches this: it is the representation. The route's answer is the
+**obligation view**: the design declares `obligation_view(N, E)`, and the delivery leg reads
+the data net `N` through the expression `E` instead of its definition, dropping the definition
+and every definition only it reached. For the tree, `E` is the chain of adds over the same
+rows — the spelling the chain level proved against the specification — so the leg is linear
+again, and the one thing it no longer checks, that the tree computes what the chain computes,
+is reported and owed to Lean by name (`view(N)`), where it is the compressor lemma. The
+certificate's claim is weakened by exactly one named theorem, never silently: the view is
+checked like a definition (a computed data net, declared leaves, the net's width), the
+composer refuses it inside a child, and the print and the round trip never see it — the
+simulators still arbitrate the tree itself.
 
 Boundaries of the mechanism, stated: data memories under the directive are refused by
 name (not yet supported); and a design whose *monitors deliberately read computed data
@@ -3392,3 +3431,63 @@ gate found two claims no English sentence owned — `oneEntryPerLine` and
 point to — and the English gained P16 and P17. And the corpus gate is what held the whole
 surface build honest: the English was not done until it produced the same verdicts as the
 symbolic reference, sabotages included.
+
+## 36. The proof discipline: induction, not simulation, in both engines
+
+This chapter states one rule that the rest of the book has been obeying without naming it, and
+that the multiplier entry (2026-09-05) forced into words when it hit the same wall in the solver
+and in the prover on the same day. The user's ruling: *"The key in both Lean and ASP, we should
+not simulate directly. It will make the proofs blow in large designs. Induction is key in both...
+and think like math proofs and not simulating proofs."*
+
+**The rule.** A proof is an argument that covers every case by the structure of the thing — by
+induction over its bits, its digits, its rows, its levels, its instants — and never by
+enumerating, evaluating or unrolling the cases. The reason is the same in both engines. A
+design's cases grow exponentially with its size: a 64-bit operand has `2^64` values, an eight-level
+compressor tree written out as a term carries `3^8` copies of every row, thirty-two free control
+bits fork a term family `2^32` ways. A proof built by simulation grows with the cases; a proof built
+by induction does not grow at all. So the question to ask of any step that is slow, or large, or
+that will not finish, is what it is enumerating — and the answer is always followed by the same
+move, which is to find the induction it was standing in for.
+
+**In the solver.** Clingo grounds: whatever a rule ranges over becomes as many instances as there
+are values. That is why the route never enumerates data (Chapter 17: opaque roles, tokens, a free
+value per distinct term at a boundary), why the proof is the induction step in normal form
+(Chapter 16), why the bounded legs are kept short and pinned to one control corner per solve, why
+a structure the leg cannot hold is replaced by its meaning through an obligation view whose
+equivalence is owed to Lean (Chapter 24), and why the budget rule (Chapter 26) is a measurement and
+not a hope. Two corollaries the multiplier paid for: a view's dropped cone must be computed jointly
+over all views and must count only live readers, or a shared or a dead net keeps the structure
+alive; and a control bit computed from data is a free boundary that forks, so spell it as a data
+term where you can.
+
+**In the prover.** The Lean kernel evaluates when asked, and asking it about the design is the
+same mistake. Never `decide`, `rfl`, `native_decide` or `bv_decide` on a term that contains the
+design; never a modulus of `2^128` inside `omega`; never a bare `simp` on a goal that carries such a
+numeral. Convert to numbers once at the boundary — a word is its natural, a signed word's value is
+`x − x_{w−1}·2^w` — and work below it in the naturals and integers, where a row identity is `ring`
+after a case split on one sign bit and the sum of the rows is a congruence calculation. State every
+structured fact generically — digits as a sum with a telescoping invariant, a tree as a list of
+ranged rows with one lemma per level, an adder as spans that compose with an invariant over the
+levels — and obtain the instance as a corollary. The genuinely bit-level facts are few, each stated
+once over naturals. Constants may be evaluated; the design may not.
+
+**Paper first.** The proof is worked out completely on paper before any Lean: every lemma stated
+and proven, the lemma graph drawn, the connectivity checked so that each conclusion is a premise
+of the next, and every identity checked numerically against the design's own definitions. Lean
+then transcribes. And the transcription's definitions are the design's nets by name, evaluated
+against the design file before any proof — a model written from a reading of the design is a third
+copy of it.
+
+**Prove that the algorithm computes the specification.** Never that it equals the previous
+machine: that proves agreement, not correctness, and makes every level hostage to every earlier
+one.
+
+**Where simulation is used.** As a witness, never as evidence for a theorem: the round trip
+checks that the print says what the design says; the transcription checks establish that what was
+transcribed is the file; a bounded leg's counterexample shows a person where a property failed.
+Each catches an error a proof about the wrong definitions could not; none stands in for the
+induction, and no theorem cites one.
+
+The learnings document carries this rule with the measurements behind each clause; the operating
+skill carries it as a checklist.

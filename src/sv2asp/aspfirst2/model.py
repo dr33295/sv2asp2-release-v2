@@ -135,6 +135,11 @@ class Design:
     #                                                    candidates through a compressor tree); the delivery
     #                                                    obligation alone computes the real terms, with the
     #                                                    enable/isolation INPUT nets pinned active
+    views: dict = field(default_factory=dict)          # obligation_view(N, E): in the DELIVERY OBLIGATION the
+    #                                                    data net N is read through E instead of its definition
+    #                                                    (a tree-shaped datapath's real term is exponential in
+    #                                                    clingo, which has no term sharing); the equivalence E =
+    #                                                    definition is owed to Lean by name (view(N))
     data: list = field(default_factory=list)           # nets declared DATA: their values are never
     #                                                    enumerated in verification -- they carry symbolic
     #                                                    TERMS (the CDS split at authoring time; the

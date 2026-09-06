@@ -285,6 +285,14 @@ you expected are there — **only a window some behaviour WRITES is framed**, be
 the specification merely reads is a derived view of the design rather than state the
 specification controls.
 
+## The proof discipline — read it in the v2 skill
+
+Neither engine simulates the design: the certificate is an induction in normal form with the
+bounded legs kept small, and Lean transcribes a paper proof in the naturals and integers, never
+evaluating a term that contains the design. The checklist is the v2 skill's section "The proof
+discipline"; the reasoning and the measurements are LEARNINGS' first section and methodology
+Chapter 36.
+
 ## Traps paid for by this route
 
 - **Transitions are behaviours; invariants are properties.** "At the next edge, X is Y" is a

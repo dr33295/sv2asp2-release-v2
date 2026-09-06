@@ -87,7 +87,7 @@ non-synthesisable constructs — rejected loud, never encoded; not a gap we inte
 | `&&` `\|\|` `!` logical | ✅ | logand/logor/lnot; operands may be bits, comparisons, or word `!=0` — boolean emitter treats each as an atomic leaf (on-set/off-set) |
 | `==` `!=` `<` `>` `<=` `>=` | ✅ | word compare; tag compare for an enum against a member or another enum signal; an enum against a NUMBER or an ordering compare goes by the member's value (`enum_value/3`) |
 | `===` `!==` case-equality | ✅ | 2-state model: `===`≡`==`, `!==`≡`!=` (no X/Z in the modeled state), same compare path ([`case_eq_demo`](../../examples/rtl2asp/case_eq_demo)) |
-| `<<` `>>` shift | ✅ | `@shl`/`@shr` ([`shift_demo`](../../examples/rtl2asp/shift_demo)) |
+| `<<` `>>` shift | ✅ | `@shl`/`@shr` ([`shift_demo`](../../examples/rtl2asp/shift_demo)); a shift of a COMPOUND bitwise expression (`((a & b) \| (a & c) \| (b & c)) << 1`, a compressor carry on one line) is lowered per bit through a named temporary at the context width -- it fell to the word path and went dark at exit 0 until 2026-09-05 (F55; sweep row `inline_majority_shift`) |
 | `<<<` `>>>` arithmetic shift | ✅ | `<<<` == `@shl`; signed `>>>` → `@ashr` (sign fill); unsigned `>>>` → logical `@shr` ([`signed_demo`](../../examples/rtl2asp/signed_demo)) |
 | reduction `\|` `&` over lanes | ✅ | `ror`/`rand`, excluded-middle 0-side ([`reduce_demo`](../../examples/rtl2asp/reduce_demo)) |
 | per-lane AND (CAM match), N-dim | ✅ | `match[i..] = valid[i..] && (entry[i..]==key)` over 1..N lane indices `val(match,I,J,..,T)` ([`cam_demo`](../../examples/rtl2asp/cam_demo), [`cam2d_demo`](../../examples/rtl2asp/cam2d_demo)) |

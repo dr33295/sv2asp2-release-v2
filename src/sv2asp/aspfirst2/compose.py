@@ -207,7 +207,7 @@ def compose(path, _seen: "tuple" = (), params: "dict | None" = None) -> Composed
                  abstracts=list(top.abstract_nets()) + list(top.abstract_mems()),   # abstract MEMORIES too (a
                  data=list(top.data), src=dict(top.src),                                # dropped one is dark = vacuous)
                  raw=top.raw, param_exprs=dict(top.param_exprs),
-                 opaque_datapath=top.opaque_datapath,
+                 opaque_datapath=top.opaque_datapath, views=dict(top.views),
                  lanes=LaneTable(top.lanes), lane_defs=list(top.lane_defs), lane_insts=dict(top.lane_insts),
                  inst_axes=dict(getattr(top, "inst_axes", {})),
                  arch_mems=dict(top.arch_mems))
@@ -319,6 +319,9 @@ def compose(path, _seen: "tuple" = (), params: "dict | None" = None) -> Composed
                 comp.ghost += _contract_ghost(cpath, ctext, R, pfx)
             continue
         # -- concrete: the child's body, renamed
+        if child.views:
+            raise ComposeError(f"{i.name} ({child.name}): obligation_view inside a child module is not "
+                               f"supported yet -- declare the view at the top level, on the flattened net")
         for m, shape in child.arch_mems.items():                # a child's architectural memory, prefixed like its inst
             out.arch_mems[pfx + m] = shape
         for n in child.nets:

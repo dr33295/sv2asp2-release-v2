@@ -137,3 +137,13 @@ PY
 ```
 
 An empty result means the file carries no state at all — the am2901 shape, the fastest kind.
+
+### A note on wide constants (2026-09-05)
+
+A constant at or above 2^31 is written as a quoted string, `k("6148914691236517205", 64)`,
+because clingo's numbers wrap there (hard rule 4). The LOADER enforces this: a bare number that
+large is refused by name before any lint runs. The design lint once carried its own rule for the
+same thing, `wide_bare`, and it was retired because it was inverted — it compared the value with
+a number, and in clingo a string orders above every number, so it fired on the correct quoted
+spelling and could never see the wrong one. If you meet a lint complaint about a quoted
+constant, you are on a tool older than this note.

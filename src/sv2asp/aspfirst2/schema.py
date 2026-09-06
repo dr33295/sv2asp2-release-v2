@@ -43,6 +43,7 @@ FACT_GLOSS = {
     "abstract": "this instance is NOT built -- its contract is assumed instead",
     "data": "this net carries DATA: a token compared and routed, never enumerated",
     "opaque_datapath": "the whole datapath is opaque -- no net's value is ever enumerated",
+    "obligation_view": "(net, expression): the DELIVERY OBLIGATION reads the data net through the expression instead of its definition (a tree-shaped datapath's real term is exponential in clingo, which has no term sharing); the equivalence is owed to Lean as view(net)",
     "arch_mem": "architectural memory the SPECIFICATION names: (name, depth, width)",
     "arch_reg": ("architectural register the specification names: (name, width) -- or "
                  "(name, enum(E)) with enum_member(E, ...) facts, which makes it a NAMED-STATE "

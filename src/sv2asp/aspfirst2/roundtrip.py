@@ -23,6 +23,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 
+from ..emit.lib import render_script
 from .libgen import LIB_DIR
 from .lint import clingo_bin, lint_file
 from .load import Design
@@ -118,7 +119,9 @@ def projection(d: Design, side: str) -> str:
             out.append("#defined dims/3. #defined dims/4.")
             continue
         out.append(f"o({n}, V, T) :- {atom}.")
-        if side in ("flat", "modular") and isinstance(w, int) and 2 <= w <= 64:
+        if side in ("flat", "modular") and isinstance(w, int) and 2 <= w:
+            # any width: the cap at 64 left a 128-bit per-bit net `None` on the translated side
+            # (new_mul's compressor tree, 2026-09-05) while both simulators agreed with the design
             # a LANE MEMBER's per-bit atom is name(idx, bit), never name(idx)(bit) -- the
             # naive append produced a syntax error the first time a multi-bit lane net
             # (the regeneration run's popcount chain) reached this fallback
@@ -141,6 +144,15 @@ def projection(d: Design, side: str) -> str:
         atom = {"authored": f"val(cell({i.name}, A), V, T)", "flat": f"val({i.name}(A), V, T)",
                 "modular": f"val({top}, {i.name}(A), V, T)"}[side]
         out.append(f"om({i.name}, A, V, T) :- {atom}.")
+    if side in ("flat", "modular"):
+        # THE PROJECTION SHIPS THE @funcs ITS WORD REBUILD CALLS. The translator ships only the
+        # functions a design's own rules use; a design with no adder anywhere -- the optimized
+        # multiplier, whose final adder is a prefix structure of and/or/xor -- ships no @add, and
+        # every rebuild of a per-bit word above 30 bits then vanished silently (clingo's
+        # "operation undefined" is an info line that drops the rule instance): `row_narrow_14
+        # @T=0: authored=... modular=None` while Icarus agreed on all 4070 samples (2026-09-05).
+        # The rebuild's own docstring assumed "a design that wide uses them"; it does not have to.
+        out.append(render_script({"add", "shl"}))
     out += ["#show o/3.", "#show om/4.", "#show oc/3.", "#defined oc/3."]
     return "\n".join(out) + "\n"
 

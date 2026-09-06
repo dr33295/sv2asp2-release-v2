@@ -54,6 +54,13 @@ def _has_bool_node(e: Expr) -> bool:
     return False
 
 
+
+def _is_bitwise_compound(x) -> bool:
+    """A bitwise and/or/xor of two operands, or a bitwise not -- the operand shapes a shift's
+    per-bit lowering cannot remap directly (it remaps a NET), so the frontend names them."""
+    return ((isinstance(x, BinOp) and x.op in ("and", "or", "xor"))
+            or (isinstance(x, UnOp) and x.op == "not"))
+
 class _NotAffineRead(Exception):
     """The window read must fold, not lower symbolically."""
 
@@ -1267,6 +1274,17 @@ class _ExprMixin:
             opw = max(lw, rw) if op in _CMP_OPS else width
             left_ir  = self._lower_expr(e.left,  subst)
             right_ir = self._lower_expr(e.right, subst)
+            if op in ("shl", "shr", "ashr") and _is_bitwise_compound(left_ir):
+                # A SHIFT OF A COMPOUND BITWISE EXPRESSION -- `((a & b) | (a & c) | (b & c)) << 1`,
+                # a compressor carry printed inline -- is hoisted into a named temporary, the
+                # exact shape a hoisted wire gave it before: the per-bit lowering's Shift is an
+                # index remap over a per-bit NET, and with a compound operand the whole assign
+                # fell to the WORD path, which read its per-bit operands as words; one of them
+                # had no word bridge, the carry was dark, and the run exited 0 with coverage OK
+                # (F55, 2026-09-05). The temp takes the operand's context-propagated width, so a
+                # `~x` evaluated at the shift's width stays exact.
+                left_ir = self._hoist_word(left_ir, getattr(left_ir, "width", None) or width,
+                                           self._loc_expr(e))
             # a ONE-bit bitwise and/or whose operands carry boolean nodes -- `(w == 3) | (w == 4)`,
             # the Booth encoder's digit bits -- is the logical connective of the same name at that
             # width, and only as such does the item-level boolean emitter take it (the word

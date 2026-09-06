@@ -263,8 +263,19 @@ def _emit_lane_word_bridge(out: _Out, lane_signals, shapes: dict[str, Shape], by
         if word_driven:                                   # word -> per-lane elements (decompose)
             off = "I" if ew == 1 else f"I * {ew}"
             out.used.add("slc")
-            out.rule(f"val({sig}(I), B, T)",
-                     [f"val({sig}, V, T)", f"I = 0..{n - 1}", f"B = @slc(V, {off}, {ew})"])
+            head = f"val({sig}(I), B, T)"
+            body = [f"val({sig}, V, T)", f"I = 0..{n - 1}", f"B = @slc(V, {off}, {ew})"]
+            if s.is_port:
+                out.rule(head, body)              # an input's word comes from outside: always decomposed
+            else:
+                # an INTERNAL word-form net: the bridge stands only if some rule derives the word.
+                # The classifier's word-form verdict and the comb emitter's lowering can disagree
+                # -- a `sel ? word : 0` top Booth row was lowered PER BIT by the mux path while
+                # this bridge read its word, which nothing derived: a dead rule, harmless while
+                # the dark-read check let a bare read pass on bit heads, and a loud false dark
+                # read once it did not (F55). Decided at the end, over the emitted rules.
+                out.deferred_decomps.append((sig, f"{head} :- {', '.join(body)}."))
+                out.lines.append(_WORD_DECOMP_DEFER + sig)
         else:                                             # lanes -> word (assemble)
             has_inner = (ew > 1 and sig in (bitvec_signals or frozenset())
                          and sig in (bitvec_word_consumers or frozenset()))
@@ -327,6 +338,7 @@ class _Out:
     used: set[str] = field(default_factory=_UsedSet)
     problems: list[tuple[object, str]] = field(default_factory=list)  # (Loc, reason)
     deferred_words: list = field(default_factory=list)   # (sig, nbits, loc, rule) above the budget (F32)
+    deferred_decomps: list = field(default_factory=list)   # (sig, rule): word->bit bridges kept only if the word is derived
     #: (signal, width, clock, guard literals, Loc) per `x`-valued assignment -- the boundary
     #: companion turns each into a guarded choice; the design layer emits nothing for it.
     dontcare: list = field(default_factory=list)
@@ -510,6 +522,7 @@ def _bits_read(base: Expr, lo: int, hi: int, t: str, ctx: _Ctx) -> tuple | None:
 
 
 _WORD_DEFER = "%__word_assembly_deferred__ "
+_WORD_DECOMP_DEFER = "%__word_decomposition_deferred__ "
 
 
 def _emit_or_defer_word(out: "_Out", s, sig: str, nbits: int, budget: int, head: str, body: list) -> None:
@@ -547,6 +560,17 @@ def resolve_deferred_words(out: "_Out", budget: int) -> None:
     read by some rule -> a refusal by name with the number (an `% UNSUPPORTED` line where the
     assembly would have been, and a coverage PROBLEM); read by nothing -> not assembled, its
     bits are the model (F32, 2026-09-03)."""
+    for sig, rule in out.deferred_decomps:
+        marker = _WORD_DECOMP_DEFER + sig
+        i = out.lines.index(marker)
+        pat = re.compile(r"^val\(" + re.escape(sig) + r", ")
+        derived = any(pat.match(ln.lstrip()) for ln in out.lines if not ln.lstrip().startswith("%"))
+        if derived:
+            out.lines[i] = rule
+        else:
+            out.lines[i] = (f"% (no word->bit bridge for {sig}: its bits are derived directly and no rule "
+                            f"derives its word -- a bridge here would read a word nothing derives, F55)")
+    out.deferred_decomps.clear()
     if not out.deferred_words:
         return
     for sig, nbits, loc, rule in out.deferred_words:

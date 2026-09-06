@@ -19,7 +19,7 @@
 %   lint(pin_width(I, P, WP, WE))    a pin whose net width WP is not the expected WE
 %   lint(addr_width(M, D, W))        spram: 2^(address width) != depth
 %   lint(comb_loop(N))               N combinationally depends on itself
-%   lint(wide_bare(E))               a k(V, W) with V >= 2^31 written as a bare number (hard rule 4)
+%   (wide_bare: retired -- the loader refuses a bare wide number by name; see below)
 %   lint(abstract_input(N))          abstract(N) on an INPUT port (inputs are already free)
 %   lint(abstract_too_wide(N, W))    an abstract net wider than 30 bits (2^W choices per instant)
 
@@ -218,7 +218,10 @@ lint(sel_not_1bit(E))  :- opform(E), E = logand(_, B), w(B, WS), WS != 1.
 lint(sel_not_1bit(E))  :- opform(E), E = logor(A, _), w(A, WS), WS != 1.
 lint(sel_not_1bit(E))  :- opform(E), E = logor(_, B), w(B, WS), WS != 1.
 lint(sel_not_1bit(E))  :- opform(E), E = lnot(A), w(A, WS), WS != 1.
-lint(wide_bare(E)) :- term(E), E = k(V, _), V >= 2147483647.       % clingo wraps at 2^31: it must be a "string"
+% (wide_bare, retired 2026-09-05: in clingo a STRING compares above every number, so
+%  `V >= 2147483647` fired on exactly the quoted spelling rule 4 demands -- the 64-bit Booth
+%  mask 0x5555555555555555 -- and a bare number at or above 2^31 cannot be represented at all;
+%  the loader refuses that spelling by name (load.py, hard rule 4), which is the real guard.)
 lint(const_too_wide(E)) :- term(E), E = k(V, W), W < 31, V >= 2 ** W.
 
 % ---- cells -----------------------------------------------------------------------------------

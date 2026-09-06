@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import itertools
 import re
 import subprocess
 import tempfile
@@ -96,6 +97,20 @@ class RefineResult:
 REFMODEL = "refmodel.\n"
 
 
+def _solve_error(p) -> str:
+    """The FIRST error lines, then the tail: clingo prints its informational notes LAST, so the
+    tail alone showed only those and the cause was cut off (new_mul's tree level, 2026-09-05).
+    An abort (exit 134) prints nothing at all and is named as such."""
+    err = p.stderr or p.stdout or ""
+    first = [ln for ln in err.splitlines() if re.search(r"error|exception|traceback|abort", ln, re.I)]
+    head = "\n".join(first[:6])
+    if p.returncode in (134, -6):
+        head = ("clingo ABORTED (exit 134) without a verdict -- an out-of-memory abort prints nothing; "
+                "the usual cause is a program whose TERMS are too large (a tree-shaped datapath "
+                "evaluated symbolically grounds exponentially: declare an obligation_view)\n" + head)
+    return f"ERROR: {(head + chr(10)) if head else ''}{err.strip()[-600:]}"
+
+
 def _solve(files: list, extra: str = "", consts: dict | None = None, timeout: int = 300) -> tuple:
     """(status, atoms) -- status SATISFIABLE / UNSATISFIABLE / ERROR(msg); atoms of the last witness."""
     with tempfile.TemporaryDirectory() as td:
@@ -108,10 +123,13 @@ def _solve(files: list, extra: str = "", consts: dict | None = None, timeout: in
             p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return f"TIMEOUT after {timeout}s", []
-    if p.returncode & 1:                    # clingo's own --time-limit ran out (INTERRUPTED bit)
-        return f"TIMEOUT after {timeout}s (clingo's own time limit)", []
+    if p.returncode == 33:                  # clasp's EXIT_MEMORY -- it has the INTERRUPTED bit set too
+        return "ERROR: clingo ran OUT OF MEMORY (exit 33) -- the program's terms or ground size are too large " \
+               "(a tree-shaped datapath evaluated symbolically: declare an obligation_view)", []
+    if p.returncode & 1 and p.returncode != 65:   # clingo's own --time-limit ran out (INTERRUPTED bit);
+        return f"TIMEOUT after {timeout}s (clingo's own time limit)", []     # 65 is EXIT_ERROR, not a timeout
     if p.returncode not in (10, 20, 30) or not p.stdout.strip():
-        return f"ERROR: {(p.stderr or p.stdout).strip()[-600:]}", []
+        return _solve_error(p), []
     j = json.loads(p.stdout)
     status = j.get("Result", "ERROR")
     atoms: list = []
@@ -141,10 +159,13 @@ def _solve_all(files: list, extra: str = "", consts: dict | None = None, project
             p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return f"TIMEOUT after {timeout}s", []
-    if p.returncode & 1:                    # clingo's own --time-limit ran out (INTERRUPTED bit)
-        return f"TIMEOUT after {timeout}s (clingo's own time limit)", []
+    if p.returncode == 33:                  # clasp's EXIT_MEMORY -- it has the INTERRUPTED bit set too
+        return "ERROR: clingo ran OUT OF MEMORY (exit 33) -- the program's terms or ground size are too large " \
+               "(a tree-shaped datapath evaluated symbolically: declare an obligation_view)", []
+    if p.returncode & 1 and p.returncode != 65:   # clingo's own --time-limit ran out (INTERRUPTED bit);
+        return f"TIMEOUT after {timeout}s (clingo's own time limit)", []     # 65 is EXIT_ERROR, not a timeout
     if p.returncode not in (10, 20, 30) or not p.stdout.strip():
-        return f"ERROR: {(p.stderr or p.stdout).strip()[-600:]}", []
+        return _solve_error(p), []
     j = json.loads(p.stdout)
     status = j.get("Result", "ERROR")
     ws = [list(w["Value"]) for w in j["Call"][0].get("Witnesses", [])] if status.startswith("SATISFIABLE") else []
@@ -1101,48 +1122,106 @@ def _delivery_obligations(res: RefineResult, d, cur_file, spec, cur_inv_text: st
     symbolic = bool(symfacts)
     files = [cur_file, lib / "aspfirst.lp", lib / "aspfirst_abstract.lp", lib / "aspfirst_t34.lp", spec] \
         + ([lib / "aspfirst_symbolic.lp"] if symbolic else [])
-    plan = plan_step(d, clocks, {}, K, free_reset=free_reset, data=dat, free_state=True,
-                     pin_high=pin_high)
-    if plan.pinned:
-        res.say(f"  obligations: enable/isolation input(s) held active for the value path: "
-                f"{', '.join(sorted(plan.pinned))} (opaque_datapath)")
+    sels = _data_selectors(d, clocks, pin_high, dat)
+    ncorners = 1
+    for _, w in sels:
+        ncorners *= 2 ** w
+    if ncorners > OBLIGATION_CORNER_BUDGET:
+        res.fail(f"obligations: the datapath reads {len(sels)} control input(s) "
+                 f"({', '.join(n for n, _ in sels)}) -- {ncorners} corners, above the budget of "
+                 f"{OBLIGATION_CORNER_BUDGET}; the delivery obligation runs one solve per corner, "
+                 f"so narrow the control the datapath reads or raise OBLIGATION_CORNER_BUDGET")
+        return
+    corners = [dict(zip([n for n, _ in sels], vals))
+               for vals in itertools.product(*[range(2 ** w) for _, w in sels])]
     hyp = ":- bad(_, 0).\n:- viol(_, 0).\n:- assume(_, _).\n"
     ask = (f"some_model :- model(_, _, {K}).\n:- not some_model.\n#show model/3.\n")
-    prog = REFMODEL + cur_inv_text + "\n" + plan.text + _projection(d, clocks) + symfacts + hyp + ask
-    st, atoms = _solve(files, prog, {"k": K})
-    if st == "UNSATISFIABLE":
-        st2, _ = _solve(files, REFMODEL + cur_inv_text + "\n" + plan.text + symfacts + hyp, {"k": K})
+    first_plan = None
+    said_pins = False
+    if sels:
+        res.say(f"  obligations: {ncorners} corner(s) of the control input(s) the datapath reads "
+                f"({', '.join(n for n, _ in sels)}), each held constant over the window -- one "
+                f"solve per corner")
+    # per model name: the verdict at every corner
+    results: dict = {}          # name -> list of (corner, kind, have, want, atoms)
+    unreachable = []
+    for corner in corners:
+        plan = plan_step(d, clocks, {}, K, free_reset=free_reset, data=dat, free_state=True,
+                         pin_high=pin_high, pin_values=corner or None)
+        if first_plan is None:
+            first_plan = plan
+        if plan.pinned and not said_pins:
+            res.say(f"  obligations: enable/isolation input(s) held active for the value path: "
+                    f"{', '.join(sorted(plan.pinned))} (opaque_datapath)")
+            said_pins = True
+        prog = REFMODEL + cur_inv_text + "\n" + plan.text + _projection(d, clocks) + symfacts + hyp + ask
+        st, atoms = _solve(files, prog, {"k": K})
+        if st == "UNSATISFIABLE":
+            unreachable.append(corner)
+            continue
+        if st != "SATISFIABLE":
+            res.fail(f"obligations: the window solve did not run{_at_corner(corner)}: {st}")
+            return
+        wants, haves = {}, {}
+        for a in atoms:
+            mm = re.match(r"model\((\w+),(.+),(\d+)\)$", a)
+            if mm and int(mm.group(3)) == K:
+                wants[mm.group(1)] = mm.group(2)
+            mm = re.match(r"o\((\w+),(.+),(\d+)\)$", a)
+            if mm and int(mm.group(3)) == K:
+                haves[mm.group(1)] = mm.group(2)
+        for name, want in sorted(wants.items()):
+            have = haves.get(name)
+            kind = ("dark" if have is None else "identity" if have == want
+                    else "owed" if (_sym(have) or _sym(want)) else "violated")
+            results.setdefault(name, []).append((corner, kind, have, want, atoms))
+    if not results:
+        st2, _ = _solve(files, REFMODEL + cur_inv_text + "\n" + first_plan.text + symfacts + hyp, {"k": K})
         res.fail("obligations: " + ("no model instance is derivable at the window's end -- the "
                  "obligation is UNREACHABLE (vacuous)" if st2 == "SATISFIABLE"
-                 else f"the {span}-instant window is itself contradictory"))
+                 else f"the {span}-instant window is itself contradictory")
+                 + (f" (at every one of the {ncorners} corners)" if sels else ""))
         return
-    if st != "SATISFIABLE":
-        res.fail(f"obligations: the window solve did not run: {st}")
-        return
-    wants, haves = {}, {}
-    for a in atoms:
-        mm = re.match(r"model\((\w+),(.+),(\d+)\)$", a)
-        if mm and int(mm.group(3)) == K:
-            wants[mm.group(1)] = mm.group(2)
-        mm = re.match(r"o\((\w+),(.+),(\d+)\)$", a)
-        if mm and int(mm.group(3)) == K:
-            haves[mm.group(1)] = mm.group(2)
-    for name, want in sorted(wants.items()):
-        have = haves.get(name)
-        if have is None:
-            res.fail(f"obligation model({name}): the design gives {name} no value at the "
-                     f"window's end -- dark")
-        elif have == want:
-            res.say(f"  obligation model({name}): discharged by IDENTITY (the same term on both sides)")
-        elif _sym(have) or _sym(want):
-            res.say(f"  obligation model({name}): OWED to Lean -- the design's term and the "
-                    f"spec's differ as symbols")
+    if unreachable:
+        res.say(f"  obligations: no delivery at {len(unreachable)} of {ncorners} corner(s) -- the "
+                f"window admits no model instance there (first: {_corner_text(unreachable[0])})")
+    for name, rows in sorted(results.items()):
+        n_id = sum(1 for r in rows if r[1] == "identity")
+        owed = [r for r in rows if r[1] == "owed"]
+        multi = ncorners > 1
+        for corner, kind, have, want, atoms in rows:
+            if kind == "dark":
+                res.fail(f"obligation model({name}): the design gives {name} no value at the "
+                         f"window's end -- dark{_at_corner(corner)}")
+            elif kind == "violated":
+                res.fail(f"obligation model({name}): VIOLATED{_at_corner(corner)} -- the design "
+                         f"delivers {have}, the spec requires {want} (both concrete)")
+                res.counterexamples.append((f"obligation model({name}){_at_corner(corner)}",
+                                            _table(d, atoms, K, clocks)))
+        if n_id == len(rows):
+            res.say(f"  obligation model({name}): discharged by IDENTITY (the same term on both sides)"
+                    + (f" at all {len(rows)} corners" if multi else ""))
+        elif owed:
+            if multi:
+                res.say(f"  obligation model({name}): OWED to Lean at {len(owed)} of {len(rows)} "
+                        f"corner(s) (identity at {n_id}) -- the design's term and the spec's differ "
+                        f"as symbols; the first such corner, {_corner_text(owed[0][0])}:")
+            else:
+                res.say(f"  obligation model({name}): OWED to Lean -- the design's term and the "
+                        f"spec's differ as symbols")
+            # the two terms, so a person can judge whether they are one function spelled two
+            # ways (the ordinary owed case) or two functions (a wrong design or contract)
+            res.say(f"     design delivers: {owed[0][2]}")
+            res.say(f"     spec requires:   {owed[0][3]}")
             res.owed.append(f"model({name})")
-        else:
-            res.fail(f"obligation model({name}): VIOLATED -- the design delivers {have}, the "
-                     f"spec requires {want} (both concrete)")
-            res.counterexamples.append((f"obligation model({name})", _table(d, atoms, K, clocks)))
 
+
+def _corner_text(corner: dict) -> str:
+    return " ".join(f"{n}={v}" for n, v in corner.items()) if corner else "(no corner)"
+
+
+def _at_corner(corner: dict) -> str:
+    return f" at corner {_corner_text(corner)}" if corner else ""
 
 def _statements(text: str) -> list:
     """Split .lp text into raw statements: a '.' at paren depth 0, outside % comments and
@@ -1211,10 +1290,113 @@ def _opaque_variant(comp, d) -> tuple:
     return pathlib.Path(path), severed, None
 
 
+def _view_variant(comp, d) -> tuple:
+    """`obligation_view(N, E)`: the DELIVERY leg's copy of the design reads N through E. N's
+    definition is dropped, and so is every definition that ONLY N's definition reached (a
+    compressor tree's intermediate nets: their real terms are what clingo could not hold --
+    a term is a tree with no sharing, so a level-8 compressor output carries 3^8 copies of
+    every row and clingo aborts mid-witness). A net some OTHER reader still needs -- a def
+    outside the cone, an instance pin, a rule, an output port, the view's own leaves -- is
+    kept. The control solves never see this file. Returns (path, {N: [dropped]}, error)."""
+    if not d.views:
+        return comp.lp_path, {}, None
+    wires = set(d.wires())
+
+    def leaves(t) -> list:
+        if isinstance(t, str):
+            return [t] if t in wires else []
+        if isinstance(t, tuple):
+            if t and t[0] in ("k", "str"):
+                return []
+            return [x for a in t[1:] for x in leaves(a)]
+        return []
+
+    readers: dict = {}
+    for n, e in d.defs.items():
+        for x in leaves(e):
+            readers.setdefault(x, set()).add(n)
+    pinned = {p.name for p in d.outputs()}
+    for i in d.insts:
+        pinned |= {v for v in i.pins.values() if isinstance(v, str)}
+    for r in d.rules:
+        pinned |= {w for w in wires if re.search(r"\b" + re.escape(w) + r"\b", r.text)}
+    for n, e in d.views.items():
+        if n not in d.defs:
+            return None, {}, f"obligation_view({n}, ..): {n} has no definition to read through the view"
+        pinned |= set(leaves(e))
+    # ONE JOINT FIXPOINT over every view: a net read by two viewed siblings (a level-7 compressor
+    # output read by both level-8 outputs) is dropped only if BOTH its readers go, which a
+    # per-view computation never saw -- each view dropped one definition, the tree survived,
+    # and the delivery leg timed out on the exponential terms after all (new_mul's optimized
+    # level, 2026-09-05).
+    cones: dict = {}
+    for n in d.views:
+        cone, todo = set(), list(leaves(d.defs[n]))
+        while todo:
+            c = todo.pop()
+            if c in cone or c in d.views:
+                continue
+            cone.add(c)
+            if c in d.defs:
+                todo.extend(leaves(d.defs[c]))
+        cones[n] = cone
+    # A reader that is itself DEAD -- reachable from no output, pin, rule or view leaf -- holds
+    # nothing: the optimized multiplier's generator emitted a level-7 propagate net nothing read,
+    # and through it every propagate net below it survived the view (each references the one
+    # below twice: an exponential term over the viewed sum and carry), so the delivery leg never
+    # finished grounding (2026-09-05). Live = reachable from a sink through definitions, never
+    # through a viewed net's own definition (it is read through its view, whose leaves are sinks).
+    live, todo = set(pinned), list(pinned)
+    while todo:
+        c = todo.pop()
+        if c in d.views or c not in d.defs:
+            continue
+        for x in leaves(d.defs[c]):
+            if x not in live:
+                live.add(x)
+                todo.append(x)
+    removed = set(d.views)
+    changed = True
+    while changed:
+        changed = False
+        for c in sorted(set().union(*cones.values())):
+            if c in removed or c in pinned or c not in d.defs:
+                continue
+            if (readers.get(c, set()) & live) <= removed:
+                removed.add(c)
+                changed = True
+    dropped: dict = {}
+    seen: set = set()
+    for n in d.views:
+        mine = sorted((cones[n] & removed) - seen)
+        dropped[n] = mine
+        seen |= set(mine)
+    drop = set(d.views) | {c for v in dropped.values() for c in v}
+    kept = []
+    for stmt in _statements(comp.lp_path.read_text()):
+        m = re.match(r"\s*(?:%[^\n]*\n\s*)*def\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,", stmt)
+        if m and m.group(1) in drop:
+            continue
+        if re.match(r"\s*(?:%[^\n]*\n\s*)*obligation_view\s*\(", stmt):
+            continue
+        kept.append(stmt)
+    body = "".join(kept) + "\n% -- obligation_view: each viewed net read through its view; the definitions only it reached are dropped --\n" \
+        + "".join(f"def({n}, {term_to_str(e)}).\n" for n, e in d.views.items())
+    fd, path = tempfile.mkstemp(suffix=".lp", prefix="view_")
+    pathlib.Path(path).write_text(body)
+    import os
+    os.close(fd)
+    return pathlib.Path(path), dropped, None
+
+
 def _opaque_pins(d) -> set:
     """The delivery obligation's pin set under `opaque_datapath`: every INPUT net wired to a
-    data register's en pin, and every input conditioning an ite over data -- held 1 so the
-    grounder prunes the idle branches and the real value path grounds single-candidate."""
+    data register's en pin -- held 1 so the grounder prunes the idle branches (an enable held
+    low means no delivery, which the obligation is not about). Control inputs the datapath
+    READS (a selector, an operand-formatting bit) are not pinned: they are enumerated as the
+    obligation's CORNERS (`_data_selectors`), one linear solve each -- pinning a selector
+    active hid every other corner, and leaving one free forked the term family along every
+    net that read it (a 32-row Booth array grounded 2^rows candidates for one sum)."""
     inputs = {q.name for q in d.inputs()}
     pins = set()
     for i in d.cell_insts():
@@ -1222,12 +1404,55 @@ def _opaque_pins(d) -> set:
             en = i.pins.get("en")
             if en in inputs:
                 pins.add(en)
-    for n, e in d.defs.items():
-        if n in d.data and isinstance(e, tuple) and len(e) >= 2 and e[0] == "ite":
-            c = e[1]
-            if isinstance(c, str) and c in inputs:
-                pins.add(c)
     return pins
+
+
+OBLIGATION_CORNER_BUDGET = 256
+
+
+def _data_selectors(d, clocks: set, pinned: frozenset, data: set) -> list:
+    """The control INPUTS the datapath reads: every input reachable, through the defs of
+    non-data nets, from a data net's definition or a data register's d pin -- minus the
+    clocks, the data inputs, the pinned enables, and anything in a reset pin's cone (the
+    window fixes the reset itself). Each is a corner axis of the delivery obligation."""
+    inputs = {q.name: q.width for q in d.inputs()}
+    dset = set(data) | set(d.data)
+
+    def leaves(e) -> list:
+        if isinstance(e, str):
+            return [e]
+        if isinstance(e, tuple):
+            return [n for a in e[1:] for n in leaves(a)]
+        return []
+
+    def cone(start: list) -> set:
+        seen, todo = set(), list(start)
+        while todo:
+            n = todo.pop()
+            if n in seen or not isinstance(n, str):
+                continue
+            seen.add(n)
+            if n in inputs or n in dset and n not in d.defs:
+                continue
+            e = d.defs.get(n)
+            if e is not None:
+                todo.extend(leaves(e))
+        return seen
+
+    start = [n for n in d.defs if n in dset]
+    for i in d.cell_insts():
+        if i.cell in ("ff", "arff", "lata") and i.pins.get("q") in dset and i.pins.get("d"):
+            start.append(i.pins["d"])
+    reached = cone(start)
+    reset_cone = cone([i.pins["rstL"] for i in d.cell_insts() if i.cell == "arff" and "rstL" in i.pins])
+    out = []
+    for n in sorted(reached):
+        w = inputs.get(n)
+        if w is None or n in clocks or n in dset or n in pinned or n in reset_cone:
+            continue
+        if isinstance(w, int):
+            out.append((n, w))
+    return out
 
 
 def _reset_exempt_tags(spec_text: str, resets: set) -> list:
@@ -1391,7 +1616,17 @@ def _refine_stimless(spec, cur, cur_inv=None, induct: "int | None" = None,
             skip_state=opq_severed, extra_resets=hint_resets)
     _scenarios(res, d, ctrl_file, spec, cur_inv_text, clocks, dat, symfacts, free_reset,
                skip_state=opq_severed, extra_resets=hint_resets)
-    _delivery_obligations(res, d, cur_file, spec, cur_inv_text, clocks, dat, symfacts, free_reset,
+    deliv_file, dropped, verr = _view_variant(comp, d)
+    if verr:
+        res.fail(verr)
+        return res
+    for n, dr in dropped.items():
+        shown = ", ".join(dr[:4]) + (", ..." if len(dr) > 4 else "")
+        res.say(f"  obligations: {n} is read through its obligation_view -- its definition and "
+                f"{len(dr)} definition(s) only it reached are dropped ({shown}); the view's equivalence "
+                f"to the definition is OWED to Lean")
+        res.owed.append(f"view({n})")
+    _delivery_obligations(res, d, deliv_file, spec, cur_inv_text, clocks, dat, symfacts, free_reset,
                           pin_high=frozenset(opq_pins))
     return res
 

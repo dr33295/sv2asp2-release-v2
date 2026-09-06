@@ -120,6 +120,15 @@ control/data split even when no compiler reads it), and the `dsl` rung is explai
      `NotSingleValued` -- fix the linkage, not the claim.
    - **Gated datapaths** declare `opaque_datapath.`; **units** are proven standalone first
      (`sv2asp2 contract <m>.lp --induct K`) and assumed in the composed step.
+   - **Control bits the datapath reads** (a signedness, a half select, an add/subtract) are
+     CORNERS of the delivery obligation: the runner solves once per assignment of them
+     (`N corner(s) of the control input(s) the datapath reads`), because pinned they hide
+     the other corner and free they fork the term family along every net that reads them.
+     Above 256 corners it refuses by name; narrow what the datapath reads, or ask Lean.
+   - **A compressor TREE** cannot have its real terms evaluated (clingo's terms have no
+     sharing; the term is exponential in the depth; clingo aborts, exit 134): declare
+     `obligation_view(N, E)` with E the chain of adds over the same rows -- the obligation
+     reads N through E and owes `view(N)` to Lean, where it is the compressor lemma.
    - Read the design back: `sv2asp2 expand l1.lp` shows it in the translator's emitted schema.
 
 5. **The certificate.** Write `verify.json` -- the manifest is the entry's declaration of what

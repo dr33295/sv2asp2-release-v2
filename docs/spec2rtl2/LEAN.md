@@ -46,7 +46,8 @@ Entry rows are relative to `examples/spec2rtl2/`.
 | `lib/lean` (`RouteLean`) | the route's **central Lean library** — the multiplier development shared by the entries (`RouteLean.Mul`: the compressor/reduction spine; `RouteLean.Booth`: the abstract radix-4 half through `booth_rows_sum`) | `Mul`: 4 theorems, 4 defs; `Booth`: 24 theorems, 10 defs | core-only; entry projects `require` it by relative path; the Lean twin of `lib/aspfirst` |
 | `wallace32/` `lean/Wallace.lean` | the Wallace tree delivers `a * b` at 64 bits, for **any** number of reduction layers | 6 theorems, 3 defs (+ the library) | §8.1 |
 | `booth_wallace32/` `lean/BoothWallace.lean` | the radix-4 Booth recoding's 17 rows sum to the same product | 4 theorems (+ the library) | §8.2 |
-| `booth_production32/` `lean/BoothProduction.lean` | invert-plus-one-correction-row equals true negation — no carry chains interfere | 19 theorems, 7 defs (+ the library) | §8.3 |
+| `booth_production32/` `lean/BoothProduction.lean` | invert-plus-one-correction-row equals true negation — no carry chains interfere |
+| `new_mul/` `lean/Mul64.lean` (+ `PENCIL_PROOF.md`) | the 64×64 multiply-accumulate's Booth level: a SIGNED multiplier's recoding with the subtract bit folded into the digits, the unsigned row, the placed C — thirty-two inverted rows plus one correction row sum to C ± A·B at 128 bits, and the 32-bit operation's low half | 19 theorems, 7 defs (+ the library) | §8.3 |
 | `booth/lean/` (`Booth4`) | the sequential Booth datapath's **exported obligation**, plus the refuted first attempt | 2 content files + lakefile | the worked export example, §4 |
 
 Scope note: this document covers the **current v2 route** only. Lean that belongs to
@@ -340,6 +341,72 @@ than restated, so the two machines provably argue from the same recoding. Its he
 `simp` unfolding a 17-layer recursion over a *symbolic* coefficient sends the kernel
 into deep recursion — the cure is one-step definitional unfolds (`have hstep : … :=
 rfl`), recorded in `LEARNINGS.md` §Lean.
+
+### 8.5 `new_mul` — `Mul64.lean` (53 theorems, 31 defs; `PENCIL_PROOF.md` beside it)
+
+The 64×64 multiply-accumulate's Booth level, and the first development in the family
+written **paper first**: `PENCIL_PROOF.md` states every lemma in the words a person would
+use, names the Lean theorem that carries it, and the Lean file is its transcription (the
+user's direction, 2026-09-05, after a first attempt that let one eight-way `omega` dispatch
+carry the whole modular bookkeeping and timed out — the paper proof is what turned that
+into six small lemmas). It generalises `RouteLean.Booth` at three points and does not
+import its 32-bit-specific half: the multiplier is **signed** (the recoding identity
+`eSum32` carries the top bit as a borrow, stated addition-only); the **subtract bit** flips
+every digit (`eDigS`, `eSumS_true`: the flipped offset digit is `4 − e`, still a natural);
+and everything is mod 2^128 with a 128-bit magnitude that may wrap when doubled
+(`leaf_n2` works from the residue, so the sibling's magnitude bound is gone). Lemma 5
+(`rows_plus_uns_false`/`_true`) is where the **unsigned row** turns the two's-complement
+value back into the plain one exactly when the operand is unsigned, which is the
+specification's `aExt`. The hardware half follows the production sibling — `row_split`,
+the disjoint-bits `bitSum` development, `negFlags_toNat` for the xor-masked correction
+word (`((A >> 1) & 0x5555…) ^ (sub ? 0x5555… : 0)`), `corrRow_eq` with the bit-64 term for
+the inverted unsigned row, `unsAbs_split`, `hw_eq_abs` — and lands `booth64_correct`, then
+`mul64_delivered_correct` and `mul32_delivered_correct` (the 32-bit operation as the low
+half, since 2^64 divides 2^128). Axioms: `propext`, `Classical.choice`, `Quot.sound` only —
+no `bv_decide`, so no native-decision axiom; the add chain of level 2a needs no compressor
+lemma, and the tree levels will import `RouteLean.Mul`'s at 128 bits when they land.
+**The tree (level 2b), 2026-09-05, two more modules.** `Csa.lean` proves the 3:2 compressor
+at 128 bits (`csa_sum`) from the full-adder identity over the naturals, `full_adder_nat`, by
+induction on bit length with Mathlib's `bit_bodd_div2`/`xor_bit`/`land_bit`/`lor_bit` — where
+`bv_decide` on the same statement ran eleven minutes and three gigabytes without an answer.
+`Tree.lean` imports both: `reduce`/`reduceN` (the generator's level rule), `rows_list_sum` and
+`hwRowsL_sum` (the list of rows sums to the chain, for ANY digit count, by induction), `tree_sum`
+(any digits, any levels) and `tree_correct` (32 digits: the two remaining rows sum to the
+specification's accumulate). Axioms: the three standard ones throughout. The modules are
+three because importing Mathlib into `Mul64.lean` slowed its core-set leaves past ten minutes;
+each builds in seconds alone.
+**Level 3, the optimized implementation (2026-09-05), five more modules -- and a change of method.**
+`Bridge.lean` sends every 128-bit value to `ZMod (2^128)` (`bv`), one lemma per operation
+(add, sub, shifts, the two extensions, not, the E-bit concatenation, list sums): the divider
+proof's method, values not bit vectors, at the user's direction. `Narrow.lean` (sign-extension
+elimination: `ebit_form`, `bExt_eq`, `not_sext`, `shl1_sext`, `row_narrow`, `Kconst_value`,
+`optRows_sum`) closes every row identity by `ring` after one sign-bit split. `Window.lean`
+gains the generic windowed tree: rows with ranges (`Row`), the generator's window rule
+(`mid3`, `wcsa3`), `wcsa3_values` (a windowed compressor IS the full one on ranged rows),
+`wreduce_values`/`wtree_sum` (the windowed tree is the plain tree, level for level, by
+induction -- no compressor instantiated). `Prefix.lean` (the Kogge-Stone adder, semantic:
+generate/propagate spans, `G_compose`, `ks_inv`, `G_zero_carry`, `kogge_stone_add`). `Opt.lean`
+assembles them: `opt_correct` -- the tree's two rows through the adder are the specification's
+accumulate. Nine theorems on `propext`, `Classical.choice`, `Quot.sound`; 2101 lines; every
+module builds in seconds. The lessons the first attempts paid for are in LEARNINGS.
+**The FRESH development (2026-09-05, the user: "start fresh on lean") — `MulInt/`, fourteen
+modules, 2090 lines, and the one that stands.** It transcribes `ALGORITHM_PROOF.md` in the
+naturals and integers: one conversion at the boundary (`Words.lean`, the library's operators
+as functions on ℕ), the design's nets by name (`Design.lean`, evaluated against `l3.lp` by
+`Check.lean`), the contract's model (`Spec.lean`), then the ten lemmas in order — recoding,
+multiplicand, narrow row, flag word, the thirty-six rows (an `Int.ModEq` calculation), the
+exact full adder, the windowed compressor equal to the full one bit by bit, the levels and
+ranges, the Kogge-Stone adder from the carry recurrence over naturals, the formatting — and
+`delivered_correct`: the design's delivered half is the contract's, for both operation widths,
+on `propext`/`Classical.choice`/`Quot.sound`, no `sorry`. The map from the paper's sections to
+the files is the paper's §11. The five earlier optimized-level modules (`Bridge`, `Narrow`,
+`Window`, `Prefix`, `Opt`) are superseded by it and archived at `archive/spec2rtl2/new_mul/lean_bitvec/`.
+Build: `cd examples/spec2rtl2/new_mul/proof/lean && lake build` (seconds after the caches).
+**A lesson this file paid for (2026-09-05):** it was written core-only, copying the siblings'
+convention, and the user ruled that entry proofs may use Mathlib — the core-only discipline
+belongs to `proofs/` (the trust root) and `lib/lean`, not to an entry's arithmetic. The
+hand-rolled modular lemmas and the six-way assembly are what that habit cost; the next
+entry development, and any extension of this one, imports Mathlib.
 
 ### 8.4 `booth` — `Booth4/` — covered in §4 (the export's worked example).
 
