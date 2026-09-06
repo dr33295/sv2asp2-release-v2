@@ -3489,5 +3489,5 @@ transcribed is the file; a bounded leg's counterexample shows a person where a p
 Each catches an error a proof about the wrong definitions could not; none stands in for the
 induction, and no theorem cites one.
 
-The learnings document carries this rule with the measurements behind each clause; the operating
-skill carries it as a checklist.
+The skills carry this rule as a checklist (`/release-v2` in a release, `/spec2rtl-v2` in the
+repository); the repository's learnings document carries the measurements behind each clause.

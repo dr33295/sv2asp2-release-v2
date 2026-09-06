@@ -289,9 +289,10 @@ specification controls.
 
 Neither engine simulates the design: the certificate is an induction in normal form with the
 bounded legs kept small, and Lean transcribes a paper proof in the naturals and integers, never
-evaluating a term that contains the design. The checklist is the v2 skill's section "The proof
-discipline"; the reasoning and the measurements are LEARNINGS' first section and methodology
-Chapter 36.
+evaluating a term that contains the design. The reasoning is `docs/spec2rtl2/ROUTE_METHODOLOGY.md`
+Chapter 36; the checklist is the section "The proof discipline" of the `/release-v2` skill (in a
+release) or of the `/spec2rtl-v2` skill (in the repository, where LEARNINGS.md also carries the
+measurements behind each clause).
 
 ## Traps paid for by this route
 

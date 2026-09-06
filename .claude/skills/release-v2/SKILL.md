@@ -225,6 +225,41 @@ exit codes directly, never through a pipe; verify a claim before a message claim
 | `the printed RTL is NOT parametric` | the two configurations differ beyond the parameter defaults | author every threshold as a parameter expression; sweep the print for numbers |
 | `inferred latch` on the round trip | the print's guards are not visibly total | guard on the enum tag, one `case` over every member |
 
+## The proof discipline — do not simulate, in either engine
+
+A proof covers every case by INDUCTION over the structure — bits, digits, rows, levels, instants —
+never by enumerating, evaluating or unrolling them. Cases grow exponentially with size; an
+induction does not grow at all. The reasoning is `docs/spec2rtl2/ROUTE_METHODOLOGY.md`
+Chapter 36; this is the checklist.
+
+In the certificate (clingo grounds: whatever a rule ranges over becomes one instance per value):
+- operands and results OPAQUE in the signature; a control bit computed from data is a boundary
+  that forks the delivery leg — spell it as a data term (a slice of a complement, not
+  `lnot(bit(...))`);
+- the proof is the induction step in normal form; the bounded legs (base, scenarios, delivery)
+  are simulations kept SMALL: short windows, one control corner per solve, enables pinned;
+- a structure the delivery leg cannot hold as a term (a compressor tree, a prefix adder) gets an
+  `obligation_view` — its meaning read instead of its definition, the equivalence owed to Lean
+  by name; the lint warns on a data net nothing reads (a dead net can hold a structure alive);
+- derived arithmetic (a count, a sum) is datapath, not control; `Solving: 0.00s` on a timeout
+  means grounding — profile before any fix.
+
+In Lean (the kernel evaluates when asked; asking it about the design is the same mistake):
+- never `decide`, `rfl`, `native_decide` or `bv_decide` on a term with the design in it; no
+  `2^128` modulus inside `omega`; no bare `simp` on a goal with such a numeral;
+- convert to numbers ONCE (a word is its natural; a signed word's value is `x − x_{w−1}·2^w`),
+  then work in ℕ/ℤ with `ring`, `push_cast`, `Int.ModEq`, `linear_combination`;
+- state every structured fact generically (a sum, a list, spans) and prove it by induction; the
+  instance is a corollary; the few bit-level facts are stated once with `testBit`;
+- paper first: every lemma, the lemma graph, the connectivity check, the identities checked
+  numerically against the design's OWN definitions; then transcribe;
+- the definitions are the design's nets by name, evaluated against the design file before any
+  proof; prove that the algorithm computes the specification, never that it equals the last
+  machine; state constants by their structure and tie the literal by one identity.
+
+Simulation is a WITNESS only: the round trip (the print says what the design says) and the
+transcription cross-checks (what was transcribed is the file). No theorem cites one.
+
 ## Where things are
 
 | what | where |
