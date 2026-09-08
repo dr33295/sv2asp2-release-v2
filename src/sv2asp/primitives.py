@@ -26,6 +26,13 @@ class PrimSpec:
                or None; ``reset_value_param`` names the param holding the reset value.
       "comb" — combinational: ``out`` is the output pin; ``build(inputs)`` returns the IR
                expression over the input-pin actuals (an Expr map keyed by pin name).
+      "comb_w" — combinational, WIDTH-AWARE: ``build(inputs, widths)`` also receives every
+               pin's actual width at the call site (keyed by pin name, the output included),
+               read from the connected signals as the vector mux reads its sizes. For cells
+               whose natural lowering is over a PARAMETERIZED width -- a binary-to-one-hot
+               decoder, a one-hot encoder, a find-first -- where a bare ``Ref`` carries no width
+               a ``comb`` builder could use (a field report, 2026-09-07). Not yet accepted
+               inside an instance ARRAY (refused by name there).
       "wire" — passthrough: ``out = in`` (buffers, DV force/release mux collapse).
       "vff"  — vectored flop: ``lanes_param`` independent per-lane flops over the en/d/q
                vectors (catalog §4.6 lane-lifting). Pins clk/en/d/q connect to vector signals.

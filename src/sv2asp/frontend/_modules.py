@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import dataclasses
 from dataclasses import dataclass, field
 
@@ -315,7 +316,8 @@ class _ModuleMixin:
         # below sees only the purely-combinational partials.
         self._assemble_clocked_slices(seq, reg_names, flagged)    # RMW slice writes, merged across blocks
         self._assemble_prim_flop_slices(seq, reg_names, flagged)  # coalesce per-bit primitive flops
-        self._assemble_partials(comb, flagged)   # reconstruct words written via slice-writes
+        self._assemble_partials(comb, flagged, writes)   # reconstruct words written via slice-writes
+        self._certify_windows(writes, flagged)          # windowed comb memory writes must tile the array
         self._assemble_lane_fields(comb, flagged)  # one lane definition per word stitched from affine fields
 
         # mark registers
@@ -689,6 +691,30 @@ class _ModuleMixin:
             # word at the module epilogue (`_assemble_lane_fields`)
             self._record_lane_field(lf, a.right, loc)
             return []
+        cg = self._const_bank_genvar_select(left)
+        if cg is not None:
+            # `assign y[c][w] = ..` / `y[c][w+k] = ..` inside `for (w ...)`: a CONSTANT outer index (a
+            # bank) and the genvar, bare or offset, on the inner dimension of an unpacked array (a
+            # field report, 2026-09-07: the bare form was refused as "arithmetic" because the
+            # constant outer index fell outside the all-genvar select). A lane-rolled memory write
+            # with the bank dimension PINNED and the inner dimension over the loop's window, the
+            # same node the all-genvar write builds. `y[c][2*w]` stays loud (below), as recorded.
+            root, bank, gv, off = cg
+            self._check_array_rank(root.name, 2)
+            adims = self._mem_dims.get(root.name, (1, 1))
+            bounds = self._mem_lane_bounds([gv], 1, adims[1:], loc)
+            if bounds is None:
+                return []
+            ghi, glo = bounds
+            ghi, glo = [None] + list(ghi), [0] + list(glo)     # the bank dimension: one cell, no window
+            # the window stays on the GENVAR's own range; an offset rides in the head (`y(c, I+k)`),
+            # and the tiling check adds it back when it counts cells
+            inner = LaneIdx(0) if not off else BinOp("add", LaneIdx(0), Const(off, 32), 32)
+            self._lane_mem_writes += 1
+            writes.append(MemWrite(mem=root.name, addrs=(Const(bank, 32), inner),
+                                   data=self._lower_expr(a.right, top=True), guards=(), clock="",
+                                   loc=loc, lane_rolled=True, lane_hi=tuple(ghi), lane_lo=tuple(glo)))
+            return []
         if self._lhs_index_uses_genvar_arith(left):
             raise NotImplementedError(
                 f"write target index uses the genvar arithmetically, in a form that is not lowered "
@@ -833,6 +859,26 @@ class _ModuleMixin:
             self._hoist_ctx = ""
             self._record_partial_expr(target, tw, off, w, rhs, loc)
             return []
+        if _enum_name(left.kind) == "ElementSelect":
+            # `assign arr[k] = v` -- one CELL of an unpacked array with a constant index, outside any
+            # generate (a genvar index took the lane path above). It was the same leaked
+            # AttributeError (a field report, 2026-09-07); the comb-block path already writes the
+            # cell as `val(arr(k), V, T)`, and this is that rule from a continuous assign.
+            root = self._select_root(left)
+            idx = self._const_of(left.selector)
+            if (root is not None and idx is not None
+                    and getattr(getattr(root, "type", None), "isUnpackedArray", False)):
+                self._hoist_ctx = f"{root.name}({idx})"
+                rhs = self._lower_expr(a.right, top=True)
+                self._hoist_ctx = ""
+                # the comb block's cell write: a memory write with an EMPTY clock, which the emitter
+                # reads as a combinational memory (every cell driven at T, at the cell's width)
+                self._mem_cell_write(root, self._select_indices(left), rhs, (), (), (), loc, "", writes)
+                return []
+            raise NotImplementedError(
+                f"continuous assign to an array cell with a runtime index "
+                f"(`{str(getattr(left, 'syntax', '')).strip()}`): a constant cell index drives that "
+                f"cell; a runtime one is deferred")
         lhs_name = left.symbol.name
         self._hoist_ctx = lhs_name
         rhs = self._lower_expr(a.right, top=True)
@@ -842,6 +888,36 @@ class _ModuleMixin:
         return [CombItem(lhs=lhs_name, rhs=rhs, loc=loc, lane_hi=self._lane_hi,
                          lane_lo=self._lane_lo, lane_step=self._lane_step)]
 
+    def _const_bank_genvar_select(self, left):
+        """`y[c][w]` or `y[c][w+k]` (k >= 0) on a 2-D unpacked array, `c` a constant and `w` an
+        in-scope genvar: (root, c, w, k); else None."""
+        if _enum_name(getattr(left, "kind", None)) != "ElementSelect":
+            return None
+        inner = self._peel(left.value)
+        if _enum_name(getattr(inner, "kind", None)) != "ElementSelect":
+            return None
+        rootx = self._peel(inner.value)
+        if _enum_name(getattr(rootx, "kind", None)) != "NamedValue":
+            return None
+        root = rootx.symbol                                  # the SYMBOL: .name and .type, as _select_root
+        if not getattr(getattr(root, "type", None), "isUnpackedArray", False):
+            return None
+        if self._expr_uses_genvar(inner.selector):
+            return None          # a genvar reads as a constant inside an elaborated generate: not a bank
+        bank = self._const_of(inner.selector)
+        if bank is None:
+            return None
+        sel = self._peel(left.selector)
+        k = _enum_name(sel.kind)
+        if k == "NamedValue" and sel.symbol.name in self._genvars:
+            return root, bank, sel.symbol.name, 0
+        if k == "BinaryOp" and _BINOP.get(_enum_name(sel.op)) == "add":
+            l, r = self._peel(sel.left), self._peel(sel.right)
+            if (_enum_name(l.kind) == "NamedValue" and l.symbol.name in self._genvars
+                    and self._const_of(r) is not None):
+                return root, bank, l.symbol.name, self._const_of(r)
+        return None
+
     def _partselect_lhs(self, left):
         """If ``left`` is a plain-vector part-select ``x[hi:lo]`` / bit-select ``x[i]`` over a NamedValue
         root, return (root_name, root_width, lo, width); else None. Non-constant bounds -> None (flag
@@ -849,6 +925,25 @@ class _ModuleMixin:
         k = _enum_name(left.kind)
         if k == "RangeSelect":
             base = self._peel(left.value)
+            if _enum_name(base.kind) == "ElementSelect":
+                # `assign arr[k][hi:lo] = v` -- a slice of one CELL of an unpacked array with a
+                # constant index (a field report, 2026-09-07: it fell through to `.symbol` on the
+                # RangeSelect and the assign failed with a leaked AttributeError). The cell is the
+                # target, at its element width; the partial-write assembly composes the slices of
+                # that cell exactly as it composes the slices of a vector. A lane-rolled array is
+                # refused by name at the assembly (its cells are the generate's).
+                root = self._select_root(base) if hasattr(self, "_select_root") else None
+                sel = getattr(base, "selector", None)
+                idx = self._const_of(sel) if sel is not None else None
+                if (root is not None and idx is not None
+                        and getattr(getattr(root, "type", None), "isUnpackedArray", False)):
+                    bnds = self._range_bounds(left)
+                    if bnds is None or bnds[0] is None:
+                        return None
+                    hi, lo = bnds
+                    ew = getattr(getattr(base, "type", None), "bitWidth", hi + 1) or (hi + 1)
+                    return (f"{root.name}({idx})", ew, lo, hi - lo + 1)
+                return None
             if _enum_name(base.kind) != "NamedValue":
                 return None
             bnds = self._range_bounds(left)
@@ -965,7 +1060,59 @@ class _ModuleMixin:
                                branches=(Branch(guards=(), value=value),),
                                has_hold=False, loc=loc0, reset_value=reset_value))
 
-    def _assemble_partials(self, comb: list, flagged: list) -> None:
+    def _certify_windows(self, writes: list, flagged: list) -> None:
+        """A combinational memory written by several lane-rolled WINDOWS (`assign y[c][w] = ..` in
+        `for (w ...)`, one window per bank and per loop) has no hold to fall back on: an uncovered
+        cell is undriven. So the windows must TILE the array -- pairwise disjoint, together the
+        whole address space -- and that is a numeric check on elaboration constants, done here
+        once per memory. Certified writes carry `windows_cover`; the emitter accepts only those
+        (a field report, 2026-09-07). A memory whose windows do not tile keeps the emitter's
+        refusal, with the gap named here."""
+        by_mem: dict[str, list[int]] = {}
+        for k, w in enumerate(writes):
+            if w.lane_rolled and not w.clock and not w.guards:
+                by_mem.setdefault(w.mem, []).append(k)
+        for mem, ks in by_mem.items():
+            adims = self._mem_dims.get(mem)
+            if adims is None or len(ks) < 2 and all(
+                    isinstance(a, LaneIdx) for a in writes[ks[0]].addrs):
+                continue                              # one full lane write: the existing path
+            rects = []
+            for k in ks:
+                w = writes[k]; rect = []
+                for d, a in enumerate(w.addrs):
+                    if isinstance(a, Const):
+                        rect.append((a.value, a.value + 1))
+                    else:
+                        off = a.right.value if isinstance(a, BinOp) else 0
+                        lo = (w.lane_lo[d] if d < len(w.lane_lo) else 0) + off
+                        hi = (w.lane_hi[d] if d < len(w.lane_hi) and w.lane_hi[d] is not None
+                              else adims[d]) + off
+                        rect.append((lo, hi))
+                rects.append(rect)
+            cells = set()
+            ok = True
+            for rect in rects:
+                pts = {()}
+                for lo, hi in rect:
+                    pts = {(*q, v) for q in pts for v in range(lo, hi)}
+                if pts & cells:
+                    ok = False
+                cells |= pts
+            total = 1
+            for n in adims:
+                total *= n
+            if not ok or len(cells) != total:
+                flagged.append((writes[ks[0]].loc, (
+                    f"combinational memory {mem}: its windowed writes "
+                    f"{'overlap' if not ok else 'do not cover every cell'} "
+                    f"({len(cells)} of {total} cells{' after an overlap' if not ok else ''}) -- "
+                    f"an uncovered cell of a combinational memory is undriven (deferred)")))
+                continue
+            for k in ks:
+                writes[k] = dataclasses.replace(writes[k], windows_cover=True)
+
+    def _assemble_partials(self, comb: list, flagged: list, writes: list | None = None) -> None:
         """Reconstruct each partially-written word from its slice-writes. Slices that tile the word
         disjointly emit ``target = {parts}`` (a Concat -> OR-of-shifts). UNCOVERED bit ranges are
         TIED TO 0 (over-width scratch nets / explicit ``[hi:lo]='0`` ties are common in real RTL) and
@@ -982,6 +1129,14 @@ class _ModuleMixin:
             # non-copy). Each part must be exactly one element wide at an element boundary; any
             # other slice of a lane signal keeps the word path (and its refusal).
             ew = self._lane_elem_w.get(target, 1) or 1
+            troot = target.split("(", 1)[0]
+            if troot != target and troot in self._lane_dims:
+                # a slice of a CELL of a lane-rolled array: the cell is the generate's, and the
+                # word assembly would give it a second driver. Refused by name (a field report,
+                # 2026-09-07, group 7), no longer a leaked AttributeError.
+                flagged.append((loc, f"partial write to a cell of lane signal {troot}: a slice that "
+                                     f"is not a whole lane at a lane boundary (deferred)"))
+                continue
             if target in self._lane_dims:
                 if self._lane_dims[target] == 1 and all(
                         w == ew and off % ew == 0 for off, w, _v, _l in ordered):
@@ -1020,6 +1175,15 @@ class _ModuleMixin:
             cparts = tuple((v, w) for off, w, v in sorted(filled, key=lambda p: -p[0]))
             tie_note = f"  [auto-tied to 0: {', '.join(tied)}]" if tied else ""
             tloc = Loc(file=loc.file, line=loc.line, text=(loc.text or target) + tie_note)
+            m = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\((\d+)\)", target)
+            if m and m.group(1) in getattr(self, "_mem_dims", {}):
+                # slices of one CELL of an unpacked array: the assembled word is that cell's
+                # combinational value -- a memory write with an empty clock, as the block path
+                # writes a cell (a field report, 2026-09-07)
+                (writes if writes is not None else []).append(MemWrite(
+                    mem=m.group(1), addrs=(Const(int(m.group(2)), 32),), data=Concat(cparts),
+                    guards=(), clock="", loc=tloc))
+                continue
             comb.append(CombItem(lhs=target, rhs=Concat(cparts), loc=tloc))
 
     # -- clocked partial (slice) writes -> read-modify-write (untouched bits retain) -----
@@ -1786,9 +1950,22 @@ class _ModuleMixin:
                 return
             en_expr = self._lower_expr(pin_expr[epin])
             if not isinstance(en_expr, Ref):
-                flagged.append((loc, f"clock-gate {node.name}: enable must be a net (assign the "
-                                     "gate condition to a wire first), got a compound expression"))
-                return
+                # The gate condition as an EXPRESSION (`.en(a & ~b)`) or a CONSTANT (`.en(1'b1)`, a
+                # gate tied always-on -- functionally the base clock) -- both ordinary in real RTL
+                # (a field report, 2026-09-07), both refused here as "must be a net". The derived
+                # domain reads its gate as a 1-bit signal, so hoist whatever the pin carries into
+                # a named bit, exactly as a condition is hoisted: `time(gclk, T) :- time(clk, T),
+                # val(gate, 1, T).` with `gate = 1` IS the base clock; with `gate = a & ~b` it is
+                # the gated one. A constant 0 makes a domain that never ticks -- faithful, and
+                # announced on the warning channel.
+                saved_ctx, self._hoist_ctx = self._hoist_ctx, node.name
+                try:
+                    if isinstance(en_expr, Const) and en_expr.value == 0:
+                        self._warns.append((loc, f"clock-gate {node.name}: enable tied to 0 -- the "
+                                                 f"derived clock never ticks; flops on it hold forever"))
+                    en_expr = self._hoist_bit(en_expr, loc)
+                finally:
+                    self._hoist_ctx = saved_ctx
             gclk = pin_name(gpin, "output")
             base = pin_name(cpin, "clock")
             self._derived.append(DerivedClock(name=gclk, base=base, gate=en_expr.name, loc=loc))
@@ -1811,6 +1988,8 @@ class _ModuleMixin:
                     flagged.append((loc, f"primitive {mod} {node.name}: wire needs exactly one input"))
                     return
                 rhs = next(iter(pinmap.values()))
+            elif spec.category == "comb_w":          # the builder sees every pin's actual width
+                rhs = spec.build(pinmap, dict(pin_w))
             else:
                 rhs = spec.build(pinmap)
             out_e = pin_expr[spec.out]
@@ -2206,11 +2385,16 @@ class _ModuleMixin:
             comb.append(CombItem(lhs=out, rhs=actual_expr(in_pin), loc=loc))
             add_cell(out)
             return
-        if spec.category == "comb":  # logic gate / 2-way mux
+        if spec.category in ("comb", "comb_w"):  # logic gate / 2-way mux; comb_w sees the widths
             pinmap = {c.port.name: self._lower_expr(c.expression)
                       for c in inst.portConnections if _enum_name(c.port.direction) == "In"}
             out = actual_name(spec.out)
-            comb.append(CombItem(lhs=out, rhs=spec.build(pinmap), loc=loc))
+            if spec.category == "comb_w":
+                widths = {c.port.name: self._port_width(c) for c in inst.portConnections}
+                rhs = spec.build(pinmap, widths)
+            else:
+                rhs = spec.build(pinmap)
+            comb.append(CombItem(lhs=out, rhs=rhs, loc=loc))
             add_cell(out)
             return
         if spec.category == "mux":  # encoded select: out = arms[sel]
@@ -2236,10 +2420,17 @@ class _ModuleMixin:
             return
         if spec.category == "clock_gate":  # ICG: gclk is a DERIVED clock domain (§6.7), NOT a flop enable
             en_expr = self._lower_expr(conns[spec.pins["en"]].expression)
-            if not isinstance(en_expr, Ref):   # a real ICG enable is a clean net; assign a complex gate to a wire
-                flagged.append((loc, f"clock-gate {inst.name}: enable must be a net (assign the gate "
-                                     "condition to a wire first), got a compound expression"))
-                return
+            if not isinstance(en_expr, Ref):
+                # an expression or a constant on the enable: hoisted into a named bit, as at the
+                # no-definition site above (a field report, 2026-09-07)
+                saved_ctx, self._hoist_ctx = self._hoist_ctx, inst.name
+                try:
+                    if isinstance(en_expr, Const) and en_expr.value == 0:
+                        self._warns.append((loc, f"clock-gate {inst.name}: enable tied to 0 -- the "
+                                                 f"derived clock never ticks; flops on it hold forever"))
+                    en_expr = self._hoist_bit(en_expr, loc)
+                finally:
+                    self._hoist_ctx = saved_ctx
             gclk, base = actual_name(spec.pins["gclk"]), actual_name(spec.pins["clk"])
             self._derived.append(DerivedClock(name=gclk, base=base, gate=en_expr.name, loc=loc))
             add_cell(gclk)
@@ -2979,6 +3170,10 @@ class _ModuleMixin:
                     flagged.append((loc, f"primitive array {mod} {name}[{n}]: buffer needs one input"))
                     return
                 comb.append(CombItem(lhs=out, rhs=Ref(ins[0]), loc=loc))
+            elif prim.category == "comb_w":
+                flagged.append((loc, f"primitive array {mod} {name}[{n}]: a width-aware (comb_w) "
+                                     f"cell inside an instance array is not lowered (deferred)"))
+                return
             else:
                 pinmap = {p: Ref(subst[p]) for p in subst if p != prim.out}
                 comb.append(CombItem(lhs=out, rhs=prim.build(pinmap), loc=loc))

@@ -218,6 +218,8 @@ class MemWrite:
     lane_lo: tuple[int, ...] = ()          # per-dim START of the loop (`for (i = 1; ..)`; () = all 0)
     reset: tuple | None = None             # F16: (rst_signal, released_polarity, cell_reset_value) when the
     #                                        write sits in an async-reset block whose reset arm clears the cells
+    windows_cover: bool = False            # a COMBINATIONAL windowed write the front end certified: the
+    #                                        memory's windowed writes tile its address space (2026-09-07)
 
 
 @dataclass(frozen=True)

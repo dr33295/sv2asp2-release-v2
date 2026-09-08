@@ -401,6 +401,16 @@ ranges, the Kogge-Stone adder from the carry recurrence over naturals, the forma
 on `propext`/`Classical.choice`/`Quot.sound`, no `sorry`. The map from the paper's sections to
 the files is the paper's §11. The five earlier optimized-level modules (`Bridge`, `Narrow`,
 `Window`, `Prefix`, `Opt`) are superseded by it and archived at `archive/spec2rtl2/new_mul/lean_bitvec/`.
+**The record imports seventeen Mathlib modules, not the library (2026-09-06, the user: "do we
+need the entire mathlib?", then "we can retain the minimal proof one").** `MulInt/` now imports
+the group structures on ℕ and ℤ, finite sums and their ring lemmas, `Nat.Bitwise`, `LawfulXor`,
+`BinaryRec`, `SuccPred`, the two `ModEq` modules, and the tactics `ring`, `norm_num` with its
+inequalities, `linear_combination`, `linarith`, `positivity`. Mathlib's own `#min_imports` found
+the first nine; the build named the rest. Measured on the same machine: a file importing only the
+operator module loads in 1.9 s against 7.7 s, and the library builds through about 1070 jobs
+against 8671, which is the import closure and also the cache a recipient must fetch. The theorem
+is the same on the same three axioms with no `sorry`. The proofs with `import Mathlib`, identical
+line for line, are archived at `archive/spec2rtl2/new_mul/lean_full_mathlib/`.
 Build: `cd examples/spec2rtl2/new_mul/proof/lean && lake build` (seconds after the caches).
 **A lesson this file paid for (2026-09-05):** it was written core-only, copying the siblings'
 convention, and the user ruled that entry proofs may use Mathlib — the core-only discipline

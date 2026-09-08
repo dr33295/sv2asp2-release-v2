@@ -2,7 +2,8 @@ from __future__ import annotations
 
 
 
-from ..ir.expr import BinOp, BitSel, Cond, Const, Expr, LaneIdx, Ref, Slice, Tag, UnOp
+import dataclasses
+from ..ir.expr import BinOp, BitSel, Cond, Const, Expr, LaneIdx, Ref, Slice, Tag, UnOp, Concat
 from ..ir.nodes import Branch, CombItem, LatchItem, Loc, MemWrite, Reset, SeqItem, Signal
 from ._common import _BINOP, _enum_name
 
@@ -1432,6 +1433,25 @@ class _StmtMixin:
         finally:
             self._lvalue_node = saved_lv
 
+    def _mem_cell_write(self, root, idxs, val, gt, tag_guards, neg_matches, loc, clock, writes) -> None:
+        """A clocked write of one CELL of an unpacked array (`arr[k] <= v`, `arr[a][b] <= v`, and the
+        cell RMW a slice write of a cell lowers to). The tail of the ElementSelect branch, shared."""
+        self._check_array_rank(root.name, len(idxs))
+        # note the element write for the mixed-write divert (F22). Deciding the LOWERING ROAD here
+        # would be source-order dependent -- `y[0] <= a[0]` written ABOVE a generate that makes `y`
+        # a lane signal is processed before `_lane_dims` knows about it, and a constant bit write
+        # routed to the slice path on that basis broke four lane tests. The decision belongs where
+        # the information is complete, so record the fact and decide after the block is collected.
+        self._elem_written = getattr(self, "_elem_written", set())
+        self._elem_written.add(root.name)
+        r = getattr(self, "_blk_reset", None)
+        mres = getattr(self, "_mem_resets", {}).get(root.name)
+        writes.append(
+            MemWrite(mem=root.name, addrs=tuple(idxs), data=val, guards=self._mem_guards(gt),
+                     clock=clock, loc=loc,
+                     reset=(r.signal, 1 if r.active == "low" else 0, mres) if (r is not None and mres is not None) else None)
+        )
+
     def _lower_nb_assign_body(self, expr, left, guards, tag_guards, neg_matches, brs, locs, writes, clock) -> None:
         # A loop control increment (`i = i + 1`) writes the genvar itself -- it is loop control, not
         # state. Lane-rolling fans `i` over the address domain, so swallow the increment (no write).
@@ -1516,6 +1536,52 @@ class _StmtMixin:
                 raise NotImplementedError("clocked write to a dynamic part-select (runtime base)")
             hi, lo = bounds
             regw = getattr(getattr(left.value, "type", None), "bitWidth", hi + 1) or (hi + 1)
+            if _enum_name(base.kind) == "ElementSelect":
+                # `arr[k][hi:lo] <= v` -- a slice of one CELL of an unpacked array (a field report,
+                # 2026-09-07: it reached `.symbol` on the ElementSelect and the whole block failed
+                # with a leaked AttributeError). The LRM's meaning is a read-modify-write of that
+                # cell: the untouched bits keep the cell's value, the slice takes `v`. Lowered as a
+                # whole-cell write of `{cell[ew-1:hi+1], v, cell[lo-1:0]}` through the memory path
+                # the whole-cell write already takes. A runtime cell index is refused by name.
+                root = self._select_root(base)
+                if (root is not None and getattr(getattr(root, "type", None), "isUnpackedArray", False)
+                        and self._const_of(base.selector) is not None):
+                    idxs = self._select_indices(base)
+                    if not clock:
+                        # In a COMB block the untouched bits are the value SO FAR in the block, not
+                        # the cell's own combinational value (which would read itself: a loop). The
+                        # straight-line shape `arr[k] = d; ... arr[k][hi:lo] = v;` folds the slice
+                        # into that earlier unguarded whole write, as the executor does for a
+                        # vector; any other shape is refused by name rather than lowered wrong.
+                        prev = [w_ for w_ in writes if w_.mem == root.name and w_.clock == ""
+                                and len(w_.addrs) == 1 and isinstance(w_.addrs[0], Const)
+                                and isinstance(idxs[0], Const) and w_.addrs[0].value == idxs[0].value]
+                        if not prev or prev[-1].guards or gt:
+                            raise NotImplementedError(
+                                f"slice write to an array cell in a combinational block "
+                                f"(`{str(getattr(left, 'syntax', '')).strip()}`): lowered only after "
+                                f"an unguarded whole write of that cell earlier in the block (the value "
+                                f"so far); a guarded or first slice write is deferred -- write the cell "
+                                f"whole")
+                        old = prev[-1].data
+                    else:
+                        old = self._lower_expr(left.value)
+                    parts = []
+                    if hi < regw - 1:
+                        parts.append((Slice(old, regw - 1, hi + 1), regw - 1 - hi))
+                    parts.append((val, hi - lo + 1))
+                    if lo > 0:
+                        parts.append((Slice(old, lo - 1, 0), lo))
+                    newv = Concat(tuple(parts)) if len(parts) > 1 else val
+                    if not clock:
+                        writes[writes.index(prev[-1])] = dataclasses.replace(prev[-1], data=newv)  # the fold
+                        return
+                    self._mem_cell_write(root, idxs, newv, gt, tag_guards, neg_matches, loc, clock, writes)
+                    return
+                raise NotImplementedError(
+                    f"clocked slice write to an array cell with a runtime index "
+                    f"(`{str(getattr(left, 'syntax', '')).strip()}`): a constant cell index is a "
+                    f"read-modify-write of that cell; a runtime one is deferred")
             self._record_slice(base.symbol.name, regw, lo, hi - lo + 1, val, gt, tag_guards, neg_matches, loc)
             return
         elif _enum_name(left.kind) == "MemberAccess":
@@ -1621,21 +1687,7 @@ class _StmtMixin:
                     return
                 self._decode_bit_write(root.name, vw, idxs[0], iw, val, gt, tag_guards, neg_matches, loc)
                 return
-            self._check_array_rank(root.name, len(idxs))
-            # note the element write for the mixed-write divert (F22). Deciding the LOWERING ROAD here
-            # would be source-order dependent -- `y[0] <= a[0]` written ABOVE a generate that makes `y`
-            # a lane signal is processed before `_lane_dims` knows about it, and a constant bit write
-            # routed to the slice path on that basis broke four lane tests. The decision belongs where
-            # the information is complete, so record the fact and decide after the block is collected.
-            self._elem_written = getattr(self, "_elem_written", set())
-            self._elem_written.add(root.name)
-            r = getattr(self, "_blk_reset", None)
-            mres = getattr(self, "_mem_resets", {}).get(root.name)
-            writes.append(
-                MemWrite(mem=root.name, addrs=tuple(idxs), data=val, guards=self._mem_guards(gt),
-                         clock=clock, loc=loc,
-                         reset=(r.signal, 1 if r.active == "low" else 0, mres) if (r is not None and mres is not None) else None)
-            )
+            self._mem_cell_write(root, idxs, val, gt, tag_guards, neg_matches, loc, clock, writes)
             return
         elif _enum_name(left.kind) == "Concatenation":
             tg_ = self._concat_targets(left)

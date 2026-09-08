@@ -3157,6 +3157,12 @@ def _emit_comb_mem(mem: str, writes: list, out: _Out,
     Anything else (multiple overrides, a non-trailing override) flags loud (fail-loud)."""
     out.construct(_prov(writes[0].loc, f"{mem} comb write port"))
     if any(w.lane_rolled for w in writes):              # generate `assign mem[i]=expr` -> lane-rolled
+        if all(w.lane_rolled and w.windows_cover and not w.guards for w in writes):
+            # several WINDOWS the front end certified to tile the array (`_certify_windows`): one
+            # rule per window, each bounded to its own cells (a field report, 2026-09-07)
+            for w in writes:
+                _emit_lane_mem_write(w, out, False, shapes, lane_dims)
+            return
         if len(writes) != 1 or not writes[0].lane_rolled:
             out.problem(writes[0].loc, f"combinational memory {mem}: lane-rolled write mixed with others")
             return
@@ -3201,6 +3207,30 @@ def _emit_lane_mem_write(w, out: _Out, default_init: bool,
     range writes every cell (no hold); a partial loop (lane_hi[d] set) or a guarded write holds the rest.
     A cell is held if it is out of range in ANY dimension OR the write is disabled -> one hold rule per
     such case (their union is exactly the complement of the written rectangle)."""
+    if w.windows_cover:
+        # a certified WINDOW of a combinational memory: a pinned constant dimension renders as its
+        # literal, a lane dimension binds its variable by the window's own range literal (so an
+        # OFFSET head `I+k` is safe: I is bound before the address fact checks the cell), and the
+        # rule drives exactly the window's cells (a field report, 2026-09-07)
+        heads, binds, ctx = [], [], _Ctx(out.used)
+        for d, a in enumerate(w.addrs):
+            if isinstance(a, Const):
+                heads.append(str(a.value))
+            else:
+                v = _LANEVARS[a.left.pos if isinstance(a, BinOp) else a.pos]
+                off = a.right.value if isinstance(a, BinOp) else 0
+                lo = w.lane_lo[d] if d < len(w.lane_lo) else 0
+                hi = w.lane_hi[d] if d < len(w.lane_hi) else None
+                heads.append(f"{v}+{off}" if off else v)
+                if hi is not None:
+                    binds.append(f"{v} = {lo}..{hi - 1}")
+                elif lo:
+                    binds.append(f"{v} >= {lo}")
+        ixs = ", ".join(heads)
+        db, dv = _word_body(w.data, "T", ctx, shapes, lane_dims, lane_ctx=True)
+        out.used |= ctx.used
+        out.rule(_mem_atom(w.mem, ixs, dv, "T"), [*binds, f"addr({w.mem}, {ixs})", *db])
+        return
     lv = [_LANEVARS[a.pos] for a in w.addrs]           # lane vars, e.g. ["I"] or ["I", "J"]
     ixs = ", ".join(lv)
     dom = f"addr({w.mem}, {ixs})"
