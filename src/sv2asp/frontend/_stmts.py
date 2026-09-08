@@ -409,7 +409,7 @@ class _StmtMixin:
             seq.append(SeqItem(reg=reg, clock=clock, reset=reset, branches=tuple(branches),
                                has_hold=False, loc=locs[reg], reset_value=reset_values.get(reg, 0),
                                combinational=comb, lane_lo=rlo, lane_hi=rhi, lane_step=rstep,
-                               lane_off=roff))
+                               lane_off=roff, lane_mul=getattr(self, "_reg_lane_mul", {}).get(reg, 1)))
 
     def _try_exec_comb(self, stmt) -> dict | None:
         """Symbolically execute an always_comb block's blocking statements (reusing the function
@@ -1473,16 +1473,21 @@ class _StmtMixin:
             ls = self._genvar_lane_slice(left)
             if ls is not None:
                 gs, lane_w = (ls[0], 1), ls[1]
+        lane_mul = 1
         if gs is None:                       # y[i+1] <= .. -> head lane I+1
             os_ = self._genvar_offset_select(left)
             if os_ is not None:
                 gs, lane_off = (os_[0], 1), os_[1]
+        if gs is None:                       # y[2*i+1] <= .. -> head lane 2*I+1
+            af = self._genvar_affine_select(left)
+            if af is not None:
+                gs, lane_mul, lane_off = (af[0], 1), af[1], af[2]
         # The RHS is lowered AFTER the lane target is registered (see below), so a lane write
         # lowers it inside its branch; every other LHS shape lowers it here.
         val = None if gs is not None else self._lower_expr(expr.right)
         if gs is not None:
             base, dims = gs
-            if lane_w is None and lane_off == 0:
+            if lane_w is None and lane_off == 0 and lane_mul == 1:
                 self._check_genvar_index_order(left, gs)
             root = self._select_root(left)   # `q` for q[i][j] (peel(left.value).symbol is None there)
             if root is not None and getattr(getattr(root, "type", None), "isUnpackedArray", False):
@@ -1520,6 +1525,9 @@ class _StmtMixin:
                 # DIFFERENT ranges would need per-branch domains -- refuse rather than pick one.
                 rng = (self._lane_lo, self._lane_hi, self._lane_step, lane_off)
                 prev = self._reg_lane_range.get(base)
+                # (Two STRIDED writes of one loop, `y[2*i] <= ..; y[2*i+1] <= ..`, are one index
+                # set with distinct head residues -- but `_rec_seq` builds ONE item per register
+                # with ONE head, so they stay a named refusal until it can split by head; F75.)
                 if prev is not None and prev != rng:
                     self._hard_flags.append((loc, (
                         f"{base}: lane-written by two loops over different index sets "
@@ -1527,6 +1535,8 @@ class _StmtMixin:
                         f"set per lane register is modelled (deferred)")))
                     return
                 self._reg_lane_range[base] = rng
+                self._reg_lane_mul = getattr(self, "_reg_lane_mul", {})
+                self._reg_lane_mul[base] = lane_mul
             reg = base
             val = self._lower_expr(expr.right)
             if lane_w:

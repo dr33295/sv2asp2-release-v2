@@ -531,7 +531,8 @@ class _ModuleMixin:
         # fields -- a bare genvar is affine, and without this the field parser stole the
         # corpus's 2-D CAM (the regen gate, 2026-09-04)
         if (self._genvar_select_dims(left) is not None or self._genvar_lane_slice(left) is not None
-                or self._genvar_offset_select(left) is not None):
+                or self._genvar_offset_select(left) is not None
+                or self._genvar_affine_select(left) is not None):
             return None
         inner = self._peel(left.value)
         if _enum_name(inner.kind) != "ElementSelect":
@@ -784,13 +785,18 @@ class _ModuleMixin:
             ls = self._genvar_lane_slice(left)
             if ls is not None:
                 gs, lane_w = (ls[0], 1), ls[1]
+        lane_mul = 1
         if gs is None:                       # y[i+1] = .. -> head lane I+1 (the carry-chain shape)
             os_ = self._genvar_offset_select(left)
             if os_ is not None:
                 gs, lane_off = (os_[0], 1), os_[1]
+        if gs is None:                       # y[2*i+1] = .. -> head lane 2*I+1 (a strided write)
+            af = self._genvar_affine_select(left)
+            if af is not None:
+                gs, lane_mul, lane_off = (af[0], 1), af[1], af[2]
         if gs is not None:
             base, dims = gs
-            if lane_w is None and lane_off == 0:
+            if lane_w is None and lane_off == 0 and lane_mul == 1:
                 self._check_genvar_index_order(left, gs)
             root = self._select_root(left)
             if root is not None and getattr(getattr(root, "type", None), "isUnpackedArray", False):
@@ -846,7 +852,8 @@ class _ModuleMixin:
                 self._note_lane_elem_w(base, lane_w or getattr(getattr(left, "type", None),
                                                                "bitWidth", 1) or 1)
             return [CombItem(lhs=base, rhs=rhs_expr, loc=loc, lane_hi=self._lane_hi,
-                             lane_lo=self._lane_lo, lane_step=self._lane_step, lane_off=lane_off)]
+                             lane_lo=self._lane_lo, lane_step=self._lane_step, lane_off=lane_off,
+                             lane_mul=lane_mul)]
         if (self._genvars and _enum_name(left.kind) == "NamedValue"
                 and left.symbol.name not in self._lane_dims and left.symbol.name not in self._gen_locals):
             # a plain WORD written inside a generate whose value mentions the lane index would

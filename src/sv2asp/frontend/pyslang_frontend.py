@@ -561,23 +561,48 @@ class PyslangFrontend(_TypesMixin, _ExprMixin, _StmtMixin, _ModuleMixin):
                                   sm.getLineNumber(sr.end), "decl", kind.split(".")[-1]))
 
         tree.root.visit(find)
+
+        def where(loc):
+            """The FILE and LINE a location really belongs to: a token from a macro expansion is
+            attributed to the expansion site (so a `PARAM_DECL macro in the header is the
+            header's line), and a member from an `include keeps the include's file."""
+            try:
+                while sm.isMacroLoc(loc):
+                    loc = sm.getExpansionLoc(loc)
+            except Exception:
+                pass
+            return sm.getFileName(loc), sm.getLineNumber(loc)
+
         for mod in modules:
             msr = mod.sourceRange
             mstart, mend = sm.getLineNumber(msr.start), sm.getLineNumber(msr.end)
             mfile = sm.getFileName(msr.start)
-            members = list(mod.members)
-            first = sm.getLineNumber(members[0].sourceRange.start) if members else mend
+            # Every member's span used to be stamped with the MODULE's file while its line numbers
+            # came from wherever its tokens were: parameters brought in by an `include landed on
+            # the module file at the include's line numbers, the header span ended at the smallest
+            # of them, and the port-list lines under it were tagged by those strangers (`decl`,
+            # or `unknown` -> UNSUPPORTED for an unmapped kind) or by nothing (UNACCOUNTED) --
+            # the seventh field report's header-line tags, settled by its coverage file
+            # (2026-09-08). A member of another file is left out of this file's map.
+            located = []
+            for m in list(mod.members):
+                sr = m.sourceRange
+                f0, l0 = where(sr.start)
+                _f1, l1 = where(sr.end)
+                if f0 != mfile:
+                    continue
+                located.append((m, l0, max(l0, l1)))
+            first = min((l0 for _m, l0, _l1 in located), default=mend)
             # module header (decl + params + port list) up to the first member
             spans.append(Span(mfile, mstart, max(mstart, first - 1), "header", "ModuleHeader"))
             spans.append(Span(mfile, mend, mend, "header", "endmodule"))
-            for m in members:
-                sr = m.sourceRange
+            for m, l0, l1 in located:
                 kind = str(m.kind).rsplit(".", 1)[-1]
                 cat = ("design" if kind in _DESIGN_KINDS
                        else "decl" if kind in _DECL_KINDS
                        else "property" if kind in _PROPERTY_KINDS
                        else "unknown")
-                spans.append(Span(mfile, sm.getLineNumber(sr.start), sm.getLineNumber(sr.end), cat, kind))
+                spans.append(Span(mfile, l0, l1, cat, kind))
         return spans
 
     def _live_lines(self, tree: object) -> frozenset[int]:

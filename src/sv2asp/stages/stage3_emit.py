@@ -113,6 +113,14 @@ def _binds_lane_var(lits: list[str], lv: str) -> bool:
     return False
 
 
+def _head_index(mul: int, off: int) -> str:
+    """The head lane of an affine write `y[mul*i + off]`: `I`, `I+1`, `2*I`, `2*I+1`, `I-1`."""
+    base = "I" if mul == 1 else f"{mul}*I"
+    if not off:
+        return base
+    return f"{base}{'+' if off > 0 else '-'}{abs(off)}"
+
+
 def _lane_term(name: str, idxstr: str) -> str:
     """Wrap a lane signal name with its lane-index list as a FUNCTOR: the lane axis lives INSIDE the
     signal term, not as a positional ``val`` argument -- ``val(q(I), V, T)``, not ``val(q, I, V, T)``.
@@ -1976,8 +1984,9 @@ def _emit_comb(item: CombItem, shapes: dict[str, Shape], out: _Out, style: str, 
         # constant, `y(I+1)`, while the domain literal below still ranges over the LOOP's own
         # index set. Single-index targets only (the frontend refuses the rest).
         _off = getattr(item, "lane_off", 0)
-        if _off:
-            lh = _lane_term(lhs, f"I{'+' if _off > 0 else '-'}{abs(_off)}")
+        _mul = getattr(item, "lane_mul", 1) or 1
+        if _off or _mul != 1:
+            lh = _lane_term(lhs, _head_index(_mul, _off))
         # RANGE GUARD (Fix 50). The grounder fans the rule over the TARGET's whole lane domain,
         # but the loop/generate that produced it may cover only part of that domain:
         # `for (i=0;i<3;i++) y[i] = …` over `y[0:7]` drives lanes 0..2 and must leave 3..7
@@ -2014,7 +2023,8 @@ def _emit_comb(item: CombItem, shapes: dict[str, Shape], out: _Out, style: str, 
                                                 getattr(item, "lane_lo", 0),
                                                 getattr(item, "lane_step", 1)))
         if isinstance(rhs, Cond):
-            _emit_lane_cond(lhs, rhs, shapes, out, item.loc, widths, lane_dims, _lane_dom)
+            _emit_lane_cond(lhs, rhs, shapes, out, item.loc, widths, lane_dims, _lane_dom,
+                            head_idx=(_head_index(_mul, _off) if (_off or _mul != 1) else None))
             return
         if lhs in bitvec_signals and (
                 isinstance(rhs, (Concat, SExt, Slice, BitSel))
@@ -2254,13 +2264,16 @@ def _cond_branches(sel: Expr, ctx: _Ctx,
 
 def _emit_lane_cond(lhs: str, rhs: Cond, shapes: dict[str, Shape], out: _Out, loc: object,
                     widths: dict[str, int] | None, lane_dims: dict[str, int] | None,
-                    lane_dom) -> None:
+                    lane_dom, head_idx: str | None = None) -> None:
     """A ternary on a LANE target, per lane: `val(y(I), A, T) :- <sel true>, <arm a read at lane I>`
     and the mirror for the else-arm. The selector is a 1-bit signal (a per-lane one reads `s(I)`, a
     scalar one is a broadcast `s`), a comparison over lane-aware operands, or an enum tag compare;
     the arms are read lane-aware (`_word_body(lane_ctx=True)`); the loop's range comes from
     ``lane_dom`` like every other lane rule."""
-    lh = _lane(lhs, lane_dims)
+    # an OFFSET or STRIDED head (`c[i+1] = s ? ..`, `y[2*i+1] = s ? ..`): the ternary emitter built
+    # its own head and ignored the item's offset (a gap since the carry-chain shape; the seventh
+    # field report's strided writes, 2026-09-08)
+    lh = _lane_term(lhs, head_idx) if head_idx else _lane(lhs, lane_dims)
     ctx = _Ctx(out.used)
     sel = rhs.sel
     if isinstance(sel, Ref) and (widths is None or widths.get(sel.name, 1) <= 1 or shapes.get(sel.name) == Shape.INDEXED):
@@ -2919,9 +2932,8 @@ def _emit_seq(item: SeqItem, out: _Out, shapes: dict[str, Shape],
     # `y[i+1] <= ..`: the head (and its own-lane hold read) is lane I+off; the domain literal and
     # every operand read still use the loop variable I.
     hidx = idx
-    if idx == "I" and getattr(item, "lane_off", 0):
-        _o = item.lane_off
-        hidx = f"I{'+' if _o > 0 else '-'}{abs(_o)}"
+    if idx == "I" and (getattr(item, "lane_off", 0) or (getattr(item, "lane_mul", 1) or 1) != 1):
+        hidx = _head_index(getattr(item, "lane_mul", 1) or 1, getattr(item, "lane_off", 0))
     nxt = "T" if comb else "T+1"   # always_comb is same-cycle; always_ff is next-cycle
     lane_lit = [f"lane({item.lane_domain}, {idx})"] if (item.lane_domain and idx is not None) else []
     # The RANGE of the loop/generate that rolled this register (`for (i = lo; i < hi; i++)

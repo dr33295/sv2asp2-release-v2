@@ -337,14 +337,18 @@ class _ExprMixin:
                 return None
             bw = getattr(getattr(base, "type", None), "bitWidth", 0) or 0
             rng = getattr(inner.symbol.type, "range", None)
-            if not bw or rng is None:
+            ew_e = getattr(getattr(e, "type", None), "bitWidth", 1) or 1
+            if not bw or rng is None or bw % ew_e:
                 return None
             left_b, right_b = int(rng.left), int(rng.right)
             bank = self._const_of(bsel)
-            if left_b >= right_b:                       # `[1:0]`: bank k sits at bits k*bw ..
-                bank_off = (bank - right_b) * bw
+            # the offset in LANES of the element's width: bank k of `[1:0][23:0][5:0]` is lane
+            # 24, not bit 144 (F63 folded BITS into the lane index -- right for one-bit elements
+            # only; a six-bit element read `x(I+144)`, a lane that did not exist, dark at exit 0)
+            if left_b >= right_b:                       # `[1:0]`: bank k sits at lanes k*bw/ew ..
+                bank_off = (bank - right_b) * bw // ew_e
             else:                                       # `[0:1]`: element 0 is the MSB end
-                bank_off = (right_b - bank) * bw
+                bank_off = (right_b - bank) * bw // ew_e
             base = inner
             sel = self._peel(e.selector)
             if (_enum_name(sel.kind) == "NamedValue"
@@ -370,6 +374,56 @@ class _ExprMixin:
         if op == "add" and is_gv(r) and self._const_of(l) is not None:
             return base.symbol.name, bank_off + self._const_of(l)
         return None
+
+    def _genvar_affine_select(self, e) -> tuple[str, int, int] | None:
+        """``(signal, a, b)`` if ``e`` is `sig[a*gv + b]` -- or `sig[bank][a*gv + b]`, or either
+        wrapped in a FULL-WIDTH range `[W-1:0]` -- with `a > 1`: a strided lane write whose head
+        is `a*I + b` (the seventh field report's `y[0][2*i][37:0] = ..` on a packed 3-D net,
+        2026-09-08; the user's word to lower it). `a == 1` is the offset form
+        (`_genvar_offset_select`). The bank folds into `b` in LANES."""
+        if not self._genvars:
+            return None
+        p = self._peel(e)
+        if _enum_name(getattr(p, "kind", None) or "") == "RangeSelect":
+            b_ = self._range_bounds(p) if hasattr(self, "_range_bounds") else None
+            inner_w = getattr(getattr(p.value, "type", None), "bitWidth", 0) or 0
+            if b_ is None or b_[1] != 0 or b_[0] != inner_w - 1:
+                return None
+            p = self._peel(p.value)
+        if _enum_name(getattr(p, "kind", None) or "") != "ElementSelect":
+            return None
+        sel = self._peel(p.selector)
+        if not self._expr_uses_genvar(sel):
+            return None
+        try:
+            ir = self._affine_ir(sel)
+            f0, f1, f2 = (self._eval_affine(ir, i) for i in (0, 1, 2))
+        except Exception:
+            return None
+        a, b = f1 - f0, f0
+        if a <= 1 or f2 != 2 * a + b:
+            return None
+        gvs = [g for g in self._genvars if self._expr_uses_genvar_name(sel, g)] if hasattr(self, "_expr_uses_genvar_name") else None
+        base = self._peel(p.value)
+        ew_e = getattr(getattr(p, "type", None), "bitWidth", 1) or 1
+        bank_lanes = 0
+        if _enum_name(base.kind) == "ElementSelect":
+            inner = self._peel(base.value)
+            bsel = self._peel(base.selector)
+            bw = getattr(getattr(base, "type", None), "bitWidth", 0) or 0
+            rng = getattr(getattr(getattr(inner, "symbol", None), "type", None), "range", None)
+            if (_enum_name(inner.kind) != "NamedValue" or self._expr_uses_genvar(bsel)
+                    or self._const_of(bsel) is None or not bw or rng is None or bw % ew_e
+                    or getattr(inner.symbol.type, "isUnpackedArray", False)):
+                return None
+            lb, rb = int(rng.left), int(rng.right)
+            k = self._const_of(bsel)
+            bank_lanes = ((k - rb) if lb >= rb else (rb - k)) * bw // ew_e
+            base = inner
+        if (_enum_name(base.kind) != "NamedValue" or getattr(getattr(base, "symbol", None), "type", None) is None
+                or getattr(base.symbol.type, "isUnpackedArray", False)):
+            return None
+        return base.symbol.name, a, b + bank_lanes
 
     def _genvar_laneidx(self, sel) -> "LaneIdx | None":
         """The `LaneIdx` of the ONE in-scope genvar a selector mentions (its position in the
@@ -407,7 +461,8 @@ class _ExprMixin:
         left-hand side, where nothing downstream can see the fold) -- so the caller refuses it."""
         if not self._genvars or self._genvar_select_dims(left) is not None \
                 or self._genvar_lane_slice(left) is not None \
-                or self._genvar_offset_select(left) is not None:
+                or self._genvar_offset_select(left) is not None \
+                or self._genvar_affine_select(left) is not None:
             return False
         cur = self._peel(left)
         while _enum_name(cur.kind) in ("ElementSelect", "RangeSelect"):

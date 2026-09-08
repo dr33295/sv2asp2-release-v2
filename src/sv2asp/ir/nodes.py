@@ -152,6 +152,7 @@ class CombItem:
     lane_lo: int = 0
     lane_step: int = 1   # the loop's stride: `i += 2` writes lo, lo+2, .. -- `(I - lo) \ step = 0`
     lane_off: int = 0    # `y[i+1] = ..`: the head lane is I+off (the carry-chain shape `c[i+1] = ..`)
+    lane_mul: int = 1    # `y[2*i+1] = ..`: the head lane is mul*I+off (a strided write; 2026-09-08)
 
 
 @dataclass(frozen=True)
@@ -194,6 +195,7 @@ class SeqItem:
     lane_lo: int = 0
     lane_step: int = 1
     lane_off: int = 0
+    lane_mul: int = 1
 
 
 @dataclass(frozen=True)
