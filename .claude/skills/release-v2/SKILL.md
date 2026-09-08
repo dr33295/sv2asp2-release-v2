@@ -57,7 +57,11 @@ a real block through its manifest, and three manifest keys decide what a real tr
 Read the run's `coverage:` line as the verdict: a PROBLEM line names a construct the tool did
 not lower, and the program must not be used (`--allow-problems` only to look). `--coverage
 FILE` writes the LINE report -- every source line with its status -- which is what settles a
-header line or port declaration tagged in the summary. A `DARK READ` is a consumer whose
+header line or port declaration tagged in the summary. A PROBLEM line that carries a
+construct's message in brackets is a refusal; one with NO bracketed reason (a comment line,
+a port name, a loop header) is the coverage CLASSIFIER's own reading of the file, not a
+refusal -- report it as a probe that keeps the module's `include`s and header macros, since
+those are what the map is reading. A `DARK READ` is a consumer whose
 producer did not lower: fix the named construct's refusal first; a `WARNING (BUDGET ..)` names
 a wide word's cost, not a defect. Report a gap with `--report issue.txt` plus the coverage
 file and a minimised probe under generic names; the maintainer reconstructs from those and
