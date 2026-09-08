@@ -70,6 +70,7 @@ class _ModuleMixin:
         saved_elemw, self._lane_elem_w = self._lane_elem_w, {}
         saved_gl, self._gen_locals = self._gen_locals, {}                 # per module (the F15 lesson)
         saved_tp, self._temp_pdims = self._temp_pdims, {}                 # per module too
+        saved_plf, self._pending_lane_flops = getattr(self, "_pending_lane_flops", []), []
         saved_lf, self._lane_fields = self._lane_fields, {}                # lane fields, per module too
         saved_rlr, self._reg_lane_range = self._reg_lane_range, {}   # per module (the F15 lesson)
         saved_ifp, self._iface_ports = self._iface_ports, set()
@@ -322,6 +323,7 @@ class _ModuleMixin:
         self._assemble_prim_flop_slices(seq, reg_names, flagged)  # coalesce per-bit primitive flops
         self._assemble_partials(comb, flagged, writes)   # reconstruct words written via slice-writes
         self._certify_windows(writes, flagged)          # windowed comb memory writes must tile the array
+        self._finalize_lane_flops(flagged)          # the row-flop lift, decided on the whole module's evidence
         self._assemble_lane_fields(comb, flagged)  # one lane definition per word stitched from affine fields
 
         # mark registers
@@ -345,6 +347,7 @@ class _ModuleMixin:
             signals[n] = Signal(**{**s.__dict__, "irtype": IRType(s.irtype.kind, ext * w, sv_base=s.irtype.sv_base,
                                                                   four_state=s.irtype.four_state)})
         temp_pdims_local, self._temp_pdims = self._temp_pdims, saved_tp
+        self._pending_lane_flops = saved_plf
         lane_dims_local, self._lane_dims = self._lane_dims, saved_lanes
         lane_elemw_local, self._lane_elem_w = self._lane_elem_w, saved_elemw
         self._gen_locals = saved_gl
@@ -709,7 +712,11 @@ class _ModuleMixin:
                 flagged.append((loc, f"{base}: the lane fields must be disjoint and cover the word -- {bad}"))
                 continue
             self._lane_dims[base] = max(self._lane_dims.get(base, 0), 1)
-            self._note_lane_elem_w(base, wtot)
+            try:
+                self._note_lane_elem_w(base, wtot)
+            except NotImplementedError as ex:     # a width conflict is a PROBLEM line, never a crash
+                flagged.append((loc, str(ex)))    # (a field report, 2026-09-08: it took the run down)
+                continue
             # runs of consecutive lanes (step 1) with the same field set -> one definition each
             run_start, run_fs = None, None
             def emit(lo_i, hi_i, fs):
@@ -2455,12 +2462,14 @@ class _ModuleMixin:
         sixth field report's §5).
 
         THE LIFT (the user's decision, 2026-09-08): a packed multi-dimensional net whose whole
-        ROW is captured, `FF #(6) ff (.q(q[b]), .d(x[b]))` on `logic [1:0][5:0] q, x`, is six
-        one-bit flops and nothing six-bit -- so it becomes a two-dimensional lane register of
-        one-bit lanes, `q(I, J) <= x(I, J)`, `J` a synthesized inner index over the row. That
-        keeps ONE lane view per net (the reporter's `x` is written per bit in a nested generate
-        and its `q` read per bit downstream), and it is decided from the DECLARATION alone --
-        never from what else the module happens to do with the net (the F17 lesson)."""
+        ROW is captured, `FF #(6) ff (.q(q[b]), .d(x[b]))` on `logic [1:0][5:0] q, x`, may be
+        six one-bit flops -- when the module treats those nets PER BIT (written `x[b][y]` in a
+        nested generate, read `q[b][y]` downstream) -- or two-bit lane registers when it treats
+        them as whole elements (`x[b][1:0] = ..`). The declaration does not decide it; the
+        module's other writes and reads do, so the decision is DEFERRED to the module's end
+        (`_finalize_lane_flops`), once every construct has registered its view. The first cut
+        decided from the declaration alone and noted the fine view at once, which crashed a
+        whole-element copy against its own two-bit write (a field report, 2026-09-08)."""
         qpin, dpin = spec.pins["q"], spec.pins["d"]
         q, dims = gs
         pw = pin_w.get(qpin, 1)
@@ -2472,15 +2481,7 @@ class _ModuleMixin:
             raise NotImplementedError(f"flop {mod} {node.name}: q on a cell of an unpacked array "
                                       f"inside a generate (deferred)")
         pd = self._packed_dims(qroot.type) if qroot is not None else ()
-        lift = pw > 1 and len(pd) == dims + 1 and pd[-1] == pw
-        inner = LaneIdx(len(self._genvar_order))          # the synthesized inner index (J after I)
-        if lift:
-            dims += 1
-            self._lane_dims[q] = max(self._lane_dims.get(q, 0), dims)
-            self._note_lane_elem_w(q, 1)
-        else:
-            self._lane_dims[q] = max(self._lane_dims.get(q, 0), dims)
-            self._note_lane_elem_w(q, pw)
+        row_shape = pw > 1 and len(pd) == dims + 1 and pd[-1] == pw
         rng = (self._lane_lo, self._lane_hi, self._lane_step, 0)
         prev = self._reg_lane_range.get(q)
         if prev is not None and prev != rng:
@@ -2488,27 +2489,6 @@ class _ModuleMixin:
                                       f"({prev} and {rng}) -- one index set per lane register (deferred)")
         self._reg_lane_range[q] = rng
         clk = pin_name(spec.pins["clk"], "clock")
-        d_e = self._peel(pin_expr[dpin])
-        d = None
-        if lift:
-            dgs = self._genvar_select_dims(d_e)
-            droot = self._select_root(d_e) if dgs is not None else None
-            dpd = self._packed_dims(droot.type) if droot is not None else ()
-            if (dgs is not None and dgs[1] == dims - 1 and len(dpd) == dims and dpd[-1] == pw
-                    and not getattr(getattr(droot, "type", None), "isUnpackedArray", False)):
-                # the D row of another packed net: the same lift, bit J of row I
-                self._lane_dims[dgs[0]] = max(self._lane_dims.get(dgs[0], 0), dims)
-                self._note_lane_elem_w(dgs[0], 1)
-                idxs = [LaneIdx(self._genvar_order.index(v)) for v in self._genvar_select_vars(d_e)]
-                d = ElemSel(dgs[0], idxs[0], more=(*idxs[1:], inner))
-        if d is None:
-            d = self._lower_expr(pin_expr[dpin])
-            if lift:                                       # any other row value: its bit J
-                d = BinOp("and", BinOp("shr", d, inner, 1), Const(1, 1), 1)
-            if not isinstance(d, (Ref, Const, ElemSel)):
-                self._hoist_ctx = q
-                d = self._hoist_word(d, 1 if lift else pw, loc)
-                self._hoist_ctx = ""
         guards: tuple = ()
         enpin = spec.pins.get("en")
         if enpin is not None and enpin in pin_expr:
@@ -2521,11 +2501,69 @@ class _ModuleMixin:
         reset = None
         if spec.reset and spec.pins.get("rstL") in pin_expr:
             reset = Reset(signal=pin_name(spec.pins["rstL"], "reset"), active=spec.reset, kind="async")
+        d_e = self._peel(pin_expr[dpin])
+        if row_shape:
+            dgs = self._genvar_select_dims(d_e)
+            droot = self._select_root(d_e) if dgs is not None else None
+            dpd = self._packed_dims(droot.type) if droot is not None else ()
+            if (dgs is not None and dgs[1] == dims and len(dpd) == dims + 1 and dpd[-1] == pw
+                    and not getattr(getattr(droot, "type", None), "isUnpackedArray", False)):
+                # the ROW-FLOP shape: q[b] <= x[b] on two packed nets. Nothing is noted now;
+                # the finalizer reads the module's evidence and builds the register.
+                idxs = [LaneIdx(self._genvar_order.index(v)) for v in self._genvar_select_vars(d_e)]
+                self._pending_lane_flops.append(dict(
+                    q=q, dnet=dgs[0], dims=dims, pw=pw, idxs=idxs, inner=LaneIdx(len(self._genvar_order)),
+                    clk=clk, guards=guards, reset=reset, loc=loc, seq=seq, reg_names=reg_names,
+                    add_cell=add_cell, lane=(self._lane_hi, self._lane_lo, self._lane_step)))
+                return
+        # any other D: the element-wide lane register, the D read lane-aware
+        self._lane_dims[q] = max(self._lane_dims.get(q, 0), dims)
+        self._note_lane_elem_w(q, pw)
+        d = self._lower_expr(pin_expr[dpin])
+        if not isinstance(d, (Ref, Const, ElemSel)):
+            self._hoist_ctx = q
+            d = self._hoist_word(d, pw, loc)
+            self._hoist_ctx = ""
         reg_names.add(q)
         seq.append(SeqItem(reg=q, clock=clk, reset=reset, branches=(Branch(guards=guards, value=d),),
                            has_hold=bool(guards), loc=loc, reset_value=0,
                            lane_hi=self._lane_hi, lane_lo=self._lane_lo, lane_step=self._lane_step))
         add_cell(q)
+
+    def _finalize_lane_flops(self, flagged: list) -> None:
+        """Build every pending row flop (`_lower_lane_flop`) now that the module's other
+        constructs have registered their lane views: LIFTED to one-bit lanes `q(I, J) <= x(I, J)`
+        when either net is already known per bit (a nested-generate write, a per-bit read),
+        else the element-wide lane register `q(I) <= x(I)`. A width conflict that remains is a
+        PROBLEM line, never a crash."""
+        for pf in self._pending_lane_flops:
+            q, dnet, dims, pw = pf["q"], pf["dnet"], pf["dims"], pf["pw"]
+            fine = (self._lane_elem_w.get(q) == 1 or self._lane_elem_w.get(dnet) == 1
+                    or self._lane_dims.get(q, 0) > dims or self._lane_dims.get(dnet, 0) > dims)
+            try:
+                if fine:
+                    self._lane_dims[q] = max(self._lane_dims.get(q, 0), dims + 1)
+                    self._lane_dims[dnet] = max(self._lane_dims.get(dnet, 0), dims + 1)
+                    self._note_lane_elem_w(q, 1)
+                    self._note_lane_elem_w(dnet, 1)
+                    d = ElemSel(dnet, pf["idxs"][0], more=(*pf["idxs"][1:], pf["inner"]))
+                else:
+                    self._lane_dims[q] = max(self._lane_dims.get(q, 0), dims)
+                    self._lane_dims[dnet] = max(self._lane_dims.get(dnet, 0), dims)
+                    self._note_lane_elem_w(q, pw)
+                    self._note_lane_elem_w(dnet, pw)
+                    d = ElemSel(dnet, pf["idxs"][0], more=tuple(pf["idxs"][1:]))
+            except NotImplementedError as ex:
+                flagged.append((pf["loc"], str(ex)))
+                continue
+            hi, lo, step = pf["lane"]
+            pf["reg_names"].add(q)
+            pf["seq"].append(SeqItem(reg=q, clock=pf["clk"], reset=pf["reset"],
+                                     branches=(Branch(guards=pf["guards"], value=d),),
+                                     has_hold=bool(pf["guards"]), loc=pf["loc"], reset_value=0,
+                                     lane_hi=hi, lane_lo=lo, lane_step=step))
+            pf["add_cell"](q)
+        self._pending_lane_flops = []
 
     def _lower_stubbed_instance(self, inst, mod, comb, cells, signals, flagged) -> None:
         """Project-local FUNCTIONAL STUB (sources.json `stubs`): replace a submodule's

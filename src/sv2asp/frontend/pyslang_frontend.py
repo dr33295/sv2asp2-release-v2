@@ -86,6 +86,7 @@ class PyslangFrontend(_TypesMixin, _ExprMixin, _StmtMixin, _ModuleMixin):
         self._lane_fields: dict = {}          # base -> fields of its lane word (affine positions), per module
         self._gen_locals: dict[str, int] = {}  # a net/variable DECLARED inside a for-generate -> the loop's extent (per module)
         self._temp_pdims: dict[str, tuple] = {}  # a temp hoisted in a NESTED generate -> its per-dimension extents (per module)
+        self._pending_lane_flops: list[dict] = []  # row flops in a generate, built at module end (per module)
         self._lane_elem_w: dict[str, int] = {}   # lane sig -> per-lane element bit width (1 = bit-vector)
         self._lane_domains: dict[str, tuple] = {}  # array-instance lane owner -> per-dim lane counts (ni[,nj])
         self._param_names_seen: set[str] = set()   # every parameter name elaboration
