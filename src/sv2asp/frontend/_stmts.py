@@ -1529,6 +1529,8 @@ class _StmtMixin:
                 self._reg_lane_range[base] = rng
             reg = base
             val = self._lower_expr(expr.right)
+            if lane_w:
+                val = self._truncate_to_lane(val, lane_w)   # an assignment truncates to the lane
         elif _enum_name(left.kind) == "RangeSelect":   # q[hi:lo] <= v -> clocked slice write (RMW)
             base = self._peel(left.value)
             bounds = self._range_bounds(left)
@@ -1578,6 +1580,16 @@ class _StmtMixin:
                         return
                     self._mem_cell_write(root, idxs, newv, gt, tag_guards, neg_matches, loc, clock, writes)
                     return
+                if (self._const_of(base.selector) is not None
+                        and _enum_name(self._peel(base.value).kind) == "NamedValue"
+                        and not getattr(getattr(self._peel(base.value).symbol, "type", None),
+                                        "isUnpackedArray", False)):
+                    # `v[k][hi:lo] <= e` on a PACKED 2-D register: a slice of the root word at the
+                    # flat offset k*ew + lo (a field report, 2026-09-07)
+                    raise NotImplementedError(
+                        f"clocked slice write to an element of a PACKED multi-dimensional register "
+                        f"(`{str(getattr(left, 'syntax', '')).strip()}`): deferred -- write the element "
+                        f"whole, or declare the register as an unpacked array")
                 raise NotImplementedError(
                     f"clocked slice write to an array cell with a runtime index "
                     f"(`{str(getattr(left, 'syntax', '')).strip()}`): a constant cell index is a "

@@ -1755,7 +1755,22 @@ def _emit_bitvec(lhs: str, rhs: Expr, out: _Out, widths: dict[str, int],
             sel_expr, bits_a, bits_b, W = entry.sel, entry.a, entry.b, entry.w
             covered.update(range(W))
             ctx = _Ctx(out.used)
-            branches = _cond_branches(sel_expr, ctx)
+            # On a LANE target the selector is read per lane, as `_emit_lane_cond` reads it: a
+            # bare lane signal is `s(I)` (the implicit lane reference every operand in a lane
+            # body carries), a neighbouring-lane select `s[i-1]` its lane term. `_cond_branches`
+            # is lane-blind and read the WORD `s` -- `val(cen, 1, T)` for a 2-bit `cen` read as
+            # `cen[b]` -- so the then-rule was safe and WRONG wherever an arm bound the lane
+            # (a field report, 2026-09-07: a per-way enable, `en[b][1:0] = cen[b] ? .. : ..`).
+            branches = None
+            if lhs in (lane_dims or {}):
+                if isinstance(sel_expr, Ref) and sel_expr.name in (lane_dims or {}):
+                    st = _lane(sel_expr.name, lane_dims)
+                    branches = ([f"val({st}, 1, T)"], [f"val({st}, 0, T)"])
+                elif isinstance(sel_expr, ElemSel) and _elemsel_lane_idx(sel_expr) is not None:
+                    st = _lane_term(sel_expr.base, _elemsel_lane_idx(sel_expr))
+                    branches = ([f"val({st}, 1, T)"], [f"val({st}, 0, T)"])
+            if branches is None:
+                branches = _cond_branches(sel_expr, ctx)
             if branches is None:
                 out.problem(loc, f"bitvec @cond: unsupported selector for {lhs}")
                 return
@@ -2892,7 +2907,8 @@ def _neg_match_lits(neg_matches: tuple, ctx: _Ctx, term=None) -> list[str]:
 def _emit_seq(item: SeqItem, out: _Out, shapes: dict[str, Shape],
               lane_dims: dict[str, int] | None = None, widths: dict[str, int] | None = None,
               bitvec_signals: frozenset[str] = frozenset(),
-              lane_elem_w: dict[str, int] | None = None) -> None:
+              lane_elem_w: dict[str, int] | None = None,
+              packed_dims: dict[str, tuple] | None = None) -> None:
     comb = item.combinational
     out.construct(_prov(item.loc, f"{'comb' if comb else 'reg'} {item.reg}"))
     clk = item.clock
@@ -2914,11 +2930,22 @@ def _emit_seq(item: SeqItem, out: _Out, shapes: dict[str, Shape],
     # of `q` (bound by the body's lane reads), so `for (i = 0; i < 3; i++)` over an 8-lane
     # register drove lanes 3..7 too, and a loop from 1 drove lane 0. Single-index lane targets
     # only (a nested loop keeps the per-dimension `lane(...)` binding it has).
+    # A NESTED lane register (`r[i][j]`, idx "I, J") gets the comb path's per-dimension
+    # domains from `packed_dims` for whichever lane variables the body leaves unbound. Its
+    # WRITE rule binds them through its per-lane operand reads, but a reset's level force and
+    # release-edge rules read only the reset net -- `val(r(I, J), 0, T) :- val(rst_n, 0, T)` --
+    # and were emitted UNSAFE, so a 2-D lane register with an async reset did not translate at
+    # all (a field report; probe h9c). Same decision function as `_lane_dom`.
     def range_lits(body: list[str]) -> list[str]:
-        if idx != "I" or lane_lit or not (widths or {}).get(reg):
+        if idx is None or lane_lit or not (widths or {}).get(reg):
             return []
         ew = (lane_elem_w or {}).get(reg, 1) or 1
         lanes = (widths or {}).get(reg, 0) // ew
+        ndim = (lane_dims or {}).get(reg, 1)
+        if ndim > 1:
+            pdims = ((packed_dims or {}).get(reg) or ())[:ndim]
+            bound = tuple(_binds_lane_var(body, v) for v in _LANEVARS[:ndim])
+            return _lane_dom_lits(_lane_domains(ndim, pdims, lanes, None, bound))
         bound = (_binds_lane_var(body, "I"),)
         return _lane_dom_lits(_lane_domains(1, (), lanes, item.lane_hi, bound, item.lane_lo,
                                             item.lane_step))
@@ -4426,7 +4453,8 @@ def emit(design: Design, analysis: Analysis, *, k: int = 8, style: str = "v1",
         _guard(out, item.loc, f"register {item.reg}",
                lambda item=item: _emit_seq(item, out, shapes, lane_dims, widths,
                                                   bitvec_signals=analysis.bitvec_signals,
-                                                  lane_elem_w=lane_elem_w))
+                                                  lane_elem_w=lane_elem_w,
+                                                  packed_dims=design.packed_dims))
     for item in design.vffs:
         _guard(out, item.loc, f"vff {item.q}", lambda item=item: _emit_vff(item, out))
     out.blank()
@@ -4582,7 +4610,8 @@ def _spec_rules(design: Design, spec: str, *, bitvec: bool = False) -> tuple[lis
         _guard(out, item.loc, f"reg {item.reg}",
                lambda item=item: _emit_seq(item, out, shapes, lane_dims, widths,
                                                   bitvec_signals=analysis.bitvec_signals,
-                                                  lane_elem_w=lane_elem_w))
+                                                  lane_elem_w=lane_elem_w,
+                                                  packed_dims=design.packed_dims))
     for item in design.vffs:
         _guard(out, item.loc, f"vff {item.q}", lambda item=item: _emit_vff(item, out))
     # memory: the SAME init/write/hold emission as flat, instance-parameterised. The cell value carries

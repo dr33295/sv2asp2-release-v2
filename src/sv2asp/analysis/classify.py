@@ -109,12 +109,52 @@ def _lane_refs(e: Expr) -> set[str] | None:
     return None
 
 
+def _mentions_laneidx(e) -> bool:
+    if isinstance(e, LaneIdx):
+        return True
+    if isinstance(e, BinOp):
+        return _mentions_laneidx(e.left) or _mentions_laneidx(e.right)
+    if isinstance(e, (UnOp, SExt, EnumCast, EnumVal)):
+        return _mentions_laneidx(e.operand)
+    if isinstance(e, (Slice, BitSel)):
+        return _mentions_laneidx(e.base) or _mentions_laneidx(getattr(e, "index", None))
+    if isinstance(e, Concat):
+        return any(_mentions_laneidx(p) for p, _ in e.parts)
+    if isinstance(e, Cond):
+        return _mentions_laneidx(e.sel) or _mentions_laneidx(e.a) or _mentions_laneidx(e.b)
+    return False
+
+
+def _has_lane_shift(e) -> bool:
+    """True if ``e`` contains a shift whose AMOUNT mentions the lane index (an affine window)."""
+    if isinstance(e, BinOp):
+        if e.op in ("shl", "shr", "ashr") and _mentions_laneidx(e.right):
+            return True
+        return _has_lane_shift(e.left) or _has_lane_shift(e.right)
+    if isinstance(e, (UnOp, SExt, EnumCast, EnumVal)):
+        return _has_lane_shift(e.operand)
+    if isinstance(e, (Slice, BitSel)):
+        return _has_lane_shift(e.base)
+    if isinstance(e, Concat):
+        return any(_has_lane_shift(p) for p, _ in e.parts)
+    if isinstance(e, Cond):
+        return _has_lane_shift(e.sel) or _has_lane_shift(e.a) or _has_lane_shift(e.b)
+    return False
+
+
 def _is_bitstructural(e: Expr) -> bool:
     """True when ``e`` is a *structural* bit-assembly RHS the per-bit emitter can lower to compact
     range-guarded per-index rules: a concatenation (incl. replication), a sign-extension, a constant
     slice/bit-select of a signal, or a Cond(sel, a, b) where both arms are bitstructural (masked-mux
     of two per-bit expressions, e.g. sf?srcA:sign_ext_concat). These are the shapes that produce
     O(N^2) @shl/@bor chains in the word model and compact O(1)-rule ranges in the per-bit model."""
+    if _has_lane_shift(e):
+        # a window whose position moves with the LANE (`big[76*i + 75 -: 2]`, the affine slice
+        # read of a wide word inside a generate) has no per-bit source: a per-bit source names a
+        # STATIC bit, and this one is bit `76*I + 74 + J`. The word path reads it (the shift by
+        # the affine amount, masked); per-bit it was refused as a leaf with no reading (a field
+        # report, 2026-09-07).
+        return False
     if isinstance(e, (Concat, SExt)):
         return True
     if isinstance(e, Slice) and isinstance(e.base, Ref):  # noqa: SIM103

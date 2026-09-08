@@ -441,6 +441,21 @@ class _ModuleMixin:
             target, tw, poff, pw_ = pw
             self._record_partial_expr(target, tw, poff, pw_, val, loc)
             return []
+        if k == "ElementSelect":
+            # a whole ELEMENT as the operand (`.out(arr[0])` on a primitive, a field report
+            # 2026-09-07): an unpacked cell is written as the cell; a packed element as the
+            # root's slice at its flat offset -- both through the partial-write assembly
+            root = self._select_root(op)
+            idx = self._const_of(op.selector)
+            ew = getattr(getattr(op, "type", None), "bitWidth", None)
+            if root is not None and idx is not None and ew:
+                if getattr(getattr(root, "type", None), "isUnpackedArray", False):
+                    self._record_partial_expr(f"{root.name}({idx})", ew, 0, ew, val, loc)
+                    return []
+                rw = getattr(getattr(root, "type", None), "bitWidth", None)
+                if rw:
+                    self._record_partial_expr(root.name, rw, idx * ew, ew, val, loc)
+                    return []
         raise NotImplementedError(f"concat-LHS operand {k} (unsupported target shape)")
 
     def _mem_lane_bounds(self, vs: list, dims: int, adims: tuple, loc) -> tuple[list, list] | None:
@@ -570,7 +585,15 @@ class _ModuleMixin:
         base, lo, hi, w, wtot = lf
         if w is not None:
             val = self._lower_expr(right, top=True)
-            field = BinOp("shl", BinOp("and", val, Const((1 << w) - 1, wtot), wtot), lo, wtot)
+            if w == wtot and isinstance(lo, Const) and lo.value == 0:
+                # the field IS the whole element (`en[b][1:0] = cen[b] ? {2{rden[b]}} : 2'b00` on
+                # a `[1:0]` element): no mask, no shift -- the value itself, so a TERNARY stays a
+                # top-level lane conditional the emitter reads per lane (`_emit_lane_cond`).
+                # Wrapped in the mask/shift it was `word expr Cond`, refused (a field report,
+                # 2026-09-07); hoisted to a temp it was classified per-bit and lost its lane.
+                field = val
+            else:
+                field = BinOp("shl", BinOp("and", val, Const((1 << w) - 1, wtot), wtot), lo, wtot)
         else:
             # a width that moves with the genvar: a CONSTANT fill (`'0`, `'1`) or ONE bit
             # replicated to exactly fill [hi:lo] (the sign extension)
@@ -773,6 +796,8 @@ class _ModuleMixin:
                 self._note_lane_elem_w(base, lane_w or getattr(getattr(left, "type", None),
                                                                "bitWidth", 1) or 1)
             rhs_expr = self._lower_expr(a.right, top=True)
+            if lane_w:
+                rhs_expr = self._truncate_to_lane(rhs_expr, lane_w)
             if base not in self._lane_dims and _has_implicit_lane_ref(rhs_expr, self._lane_dims):
                 # the RHS names no genvar in the TEXT but reads a lane BY CONSTRUCTION -- a
                 # generate-local net (`enc[i] = bi ^ 5` with `logic [2:0] bi` declared in the
@@ -855,7 +880,26 @@ class _ModuleMixin:
             self._hoist_ctx = target
             rhs = self._lower_expr(a.right, top=True)
             if not isinstance(rhs, (Ref, Const, Slice, BitSel)):
+                rp = self._peel(a.right)
+                unit = None
+                if _enum_name(rp.kind) == "Replication":
+                    # `{24{v}}` into a slice: remember the UNIT beside the hoisted temp, so the
+                    # assembly can read the slice as a run of whole LANES each holding `v` when
+                    # the target turns out to be a lane signal (a field report, 2026-09-07: a
+                    # clock-enable vector built from one valid, read per lane in a generate).
+                    n = self._const_of(rp.count) or 0
+                    u = self._lower_expr(rp.concat)
+                    if isinstance(u, Concat) and len(u.parts) == 1:
+                        u = u.parts[0][0]                  # `{v}`: the one-element concatenation
+                    uw = getattr(getattr(rp.concat, "type", None), "bitWidth", 0) or 0
+                    if n and uw and n * uw == w and isinstance(u, (Ref, Const, BitSel, Slice)):
+                        unit = (u, uw)
                 rhs = self._hoist_word(rhs, w, loc)
+                self._partial_hoists = getattr(self, "_partial_hoists", set())
+                self._partial_hoists.add(rhs.name)     # a temp the per-element assembly cannot read as a word
+                if unit is not None:
+                    self._partial_repl = getattr(self, "_partial_repl", {})
+                    self._partial_repl[rhs.name] = unit
             self._hoist_ctx = ""
             self._record_partial_expr(target, tw, off, w, rhs, loc)
             return []
@@ -943,6 +987,22 @@ class _ModuleMixin:
                     hi, lo = bnds
                     ew = getattr(getattr(base, "type", None), "bitWidth", hi + 1) or (hi + 1)
                     return (f"{root.name}({idx})", ew, lo, hi - lo + 1)
+                if root is not None and idx is not None and _enum_name(self._peel(inner_base := self._peel(base.value)).kind) == "NamedValue":
+                    # `assign v[k][hi:lo] = e` on a PACKED 2-D vector (a field report, 2026-09-07:
+                    # the same leaked AttributeError as the unpacked cell, one path over): element
+                    # k of the packed word is the slice [k*ew, (k+1)*ew), so this is a plain slice
+                    # write of the root at the FLAT offset k*ew + lo.
+                    bnds = self._range_bounds(left)
+                    if bnds is None or bnds[0] is None:
+                        return None
+                    hi, lo = bnds
+                    ew = getattr(getattr(base, "type", None), "bitWidth", None)
+                    rw = getattr(getattr(inner_base, "type", None), "bitWidth", None)
+                    if not ew or not rw:
+                        return None
+                    # the root word at the FLAT offset; `_assemble_partials` writes it as one lane
+                    # of the element when the root is a lane signal, else as a word slice
+                    return (inner_base.symbol.name, rw, idx * ew + lo, hi - lo + 1)
                 return None
             if _enum_name(base.kind) != "NamedValue":
                 return None
@@ -1138,11 +1198,24 @@ class _ModuleMixin:
                                      f"is not a whole lane at a lane boundary (deferred)"))
                 continue
             if target in self._lane_dims:
+                # A part covering a RUN of whole lanes (`ck[23:0] = {24{v}}`, `ck[31:24] = 8'd0`)
+                # is a partial lane loop over that run when every lane gets the SAME value: the
+                # replication's unit, or a constant whose per-lane slices agree.
+                def _run_unit(off: int, w: int, v):
+                    if w == ew:
+                        return v
+                    if isinstance(v, Const):
+                        mask = (1 << ew) - 1
+                        vals = {(v.value >> (k * ew)) & mask for k in range(w // ew)}
+                        return Const(vals.pop(), ew) if len(vals) == 1 else None
+                    rp = getattr(self, "_partial_repl", {}).get(getattr(v, "name", None))
+                    return rp[0] if rp is not None and rp[1] == ew else None
                 if self._lane_dims[target] == 1 and all(
-                        w == ew and off % ew == 0 for off, w, _v, _l in ordered):
+                        w % ew == 0 and off % ew == 0 and _run_unit(off, w, v) is not None
+                        for off, w, v, _l in ordered):
                     for off, w, v, pl in ordered:
-                        comb.append(CombItem(lhs=target, rhs=v, loc=pl,
-                                             lane_lo=off // ew, lane_hi=off // ew + 1))
+                        comb.append(CombItem(lhs=target, rhs=_run_unit(off, w, v), loc=pl,
+                                             lane_lo=off // ew, lane_hi=(off + w) // ew))
                     continue
                 # Any other slice of a LANE signal has no per-lane reading: the word assembly
                 # below would be emitted as a per-lane rule (the value of the whole word in
@@ -1971,7 +2044,7 @@ class _ModuleMixin:
             self._derived.append(DerivedClock(name=gclk, base=base, gate=en_expr.name, loc=loc))
             add_cell(gclk)
             return
-        if spec.category in ("comb", "wire"):
+        if spec.category in ("comb", "wire", "comb_w"):   # comb_w: the gate a field report found missing (2026-09-07)
             # Generic combinational cell with NO definition in scope -- the site-plugin
             # path (config.py): the spec's ``build`` may compose any IR expression over
             # the pin actuals, including FuncCall to a plugin-registered @func. Every
@@ -2002,6 +2075,15 @@ class _ModuleMixin:
                     w = getattr(getattr(op, "type", None), "bitWidth", 1) or 1
                     off -= w
                     comb.extend(self._assign_lhs_operand(op, Slice(ref, off + w - 1, off), w, loc))
+                add_cell(node.name)
+            elif _enum_name(self._peel(out_e).kind) in ("ElementSelect", "RangeSelect"):
+                # the output on a SELECT (`.out(arr[0])`, `.out(v[7:0])`, a field report 2026-09-07):
+                # the cell's value in a named temp, written into the selected part through the
+                # same path a concatenation operand takes
+                self._hoist_ctx = node.name
+                ref = self._hoist_word(rhs, ow, loc)
+                self._hoist_ctx = ""
+                comb.extend(self._assign_lhs_operand(self._peel(out_e), ref, ow, loc))
                 add_cell(node.name)
             else:
                 root_name = pin_name(spec.out, "output")
@@ -2388,12 +2470,27 @@ class _ModuleMixin:
         if spec.category in ("comb", "comb_w"):  # logic gate / 2-way mux; comb_w sees the widths
             pinmap = {c.port.name: self._lower_expr(c.expression)
                       for c in inst.portConnections if _enum_name(c.port.direction) == "In"}
-            out = actual_name(spec.out)
             if spec.category == "comb_w":
                 widths = {c.port.name: self._port_width(c) for c in inst.portConnections}
                 rhs = spec.build(pinmap, widths)
             else:
                 rhs = spec.build(pinmap)
+            oe = conns[spec.out].expression
+            if _enum_name(oe.kind) == "Assignment":
+                oe = oe.left
+            if _enum_name(self._peel(oe).kind) in ("ElementSelect", "RangeSelect"):
+                # the output on a SELECT (a field report, 2026-09-07): hoisted, then written into
+                # the selected part as a concatenation operand is
+                ow = self._port_width(conns[spec.out])
+                saved_ctx, self._hoist_ctx = self._hoist_ctx, inst.name
+                try:
+                    ref = self._hoist_word(rhs, ow, loc)
+                finally:
+                    self._hoist_ctx = saved_ctx
+                comb.extend(self._assign_lhs_operand(self._peel(oe), ref, ow, loc))
+                add_cell(inst.name)
+                return
+            out = actual_name(spec.out)
             comb.append(CombItem(lhs=out, rhs=rhs, loc=loc))
             add_cell(out)
             return

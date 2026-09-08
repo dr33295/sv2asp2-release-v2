@@ -299,6 +299,37 @@ class _ExprMixin:
         if not self._genvars or _enum_name(getattr(e, "kind", None) or "") != "ElementSelect":
             return None
         base = self._peel(e.value)
+        # A CONSTANT-BANK select of a packed 2-D, `sig[1][gv + c]` / `sig[0][gv]`: bank `1` of
+        # `logic [1:0][5:0] sig` is bits 11..6 of the word, so the element is the flat lane
+        # `gv + (1*6 + c)` -- the offset form with the bank folded into the constant. Read and
+        # written this way by a decoder that splits a wide input into ways (a field report,
+        # 2026-09-07); before, the write was refused as a genvar VALUE use and the read went
+        # through the nested-select desugar. Only for a bank whose index is a constant that
+        # does not mention the genvar, and only for the outer packed dimension.
+        bank_off = 0
+        if _enum_name(base.kind) == "ElementSelect":
+            inner = self._peel(base.value)
+            bsel = self._peel(base.selector)
+            if (_enum_name(inner.kind) != "NamedValue"
+                    or getattr(getattr(inner, "symbol", None), "type", None) is None
+                    or getattr(inner.symbol.type, "isUnpackedArray", False)
+                    or self._expr_uses_genvar(bsel) or self._const_of(bsel) is None):
+                return None
+            bw = getattr(getattr(base, "type", None), "bitWidth", 0) or 0
+            rng = getattr(inner.symbol.type, "range", None)
+            if not bw or rng is None:
+                return None
+            left_b, right_b = int(rng.left), int(rng.right)
+            bank = self._const_of(bsel)
+            if left_b >= right_b:                       # `[1:0]`: bank k sits at bits k*bw ..
+                bank_off = (bank - right_b) * bw
+            else:                                       # `[0:1]`: element 0 is the MSB end
+                bank_off = (right_b - bank) * bw
+            base = inner
+            sel = self._peel(e.selector)
+            if (_enum_name(sel.kind) == "NamedValue"
+                    and getattr(getattr(sel, "symbol", None), "name", None) in self._genvars):
+                return base.symbol.name, bank_off      # `sig[1][gv]`: the bare genvar, offset by the bank
         if _enum_name(base.kind) != "NamedValue" or getattr(getattr(base, "symbol", None),
                                                           "type", None) is None:
             return None
@@ -315,10 +346,28 @@ class _ExprMixin:
                     and getattr(getattr(x, "symbol", None), "name", None) in self._genvars)
         if is_gv(l) and self._const_of(r) is not None:
             c = self._const_of(r)
-            return base.symbol.name, (c if op == "add" else -c)
+            return base.symbol.name, bank_off + (c if op == "add" else -c)
         if op == "add" and is_gv(r) and self._const_of(l) is not None:
-            return base.symbol.name, self._const_of(l)
+            return base.symbol.name, bank_off + self._const_of(l)
         return None
+
+    def _genvar_laneidx(self, sel) -> "LaneIdx | None":
+        """The `LaneIdx` of the ONE in-scope genvar a selector mentions (its position in the
+        generate nest, as a bare genvar lowers), or None if it mentions none or several."""
+        found: list[str] = []
+
+        def walk(x) -> None:
+            if x is None or not hasattr(x, "kind"):
+                return
+            if _enum_name(x.kind) == "NamedValue":
+                nm = getattr(getattr(x, "symbol", None), "name", None)
+                if nm in self._genvars and nm in self._genvar_order and nm not in found:
+                    found.append(nm)
+                return
+            for attr in ("left", "right", "operand", "value", "selector"):
+                walk(getattr(x, attr, None))
+        walk(self._peel(sel))
+        return LaneIdx(self._genvar_order.index(found[0])) if len(found) == 1 else None
 
     def _note_lane_elem_w(self, name: str, w: int) -> None:
         """Record the per-lane element width a genvar select implies for ``name``, refusing a
@@ -667,6 +716,29 @@ class _ExprMixin:
                                          initial=None, loc=loc)
         self._lane_local_temp(name, expr, 1)
         return Ref(name)
+
+    @staticmethod
+    def _ir_width(e) -> int | None:
+        """The bit width of a lowered expression where the IR states it: a Const/BinOp/UnOp/Cond
+        carry one, a Concat is the sum of its parts, a Slice its range; None where it does not."""
+        if isinstance(e, Concat):
+            return sum(w for _, w in e.parts)
+        if isinstance(e, Slice):
+            return e.hi - e.lo + 1
+        if isinstance(e, BitSel):
+            return 1
+        w = getattr(e, "width", None)
+        return w if isinstance(w, int) and w > 0 else None
+
+    def _truncate_to_lane(self, e: Expr, lane_w: int) -> Expr:
+        """An assignment TRUNCATES: a value wider than its lane target keeps the low ``lane_w``
+        bits (LRM 10.7). A byte-lane write `rd[i*2 +: 2] = {a, b}` of a 4-bit concatenation
+        stored the whole 4-bit value in a 2-bit lane, and the word bridge overlapped the lanes
+        (a field report's affine windows, 2026-09-07 -- Icarus disagreed under random stimulus)."""
+        w = self._ir_width(e)
+        if w is not None and lane_w and w > lane_w:
+            return BinOp("and", e, Const((1 << lane_w) - 1, lane_w), lane_w)
+        return e
 
     def _lane_local_temp(self, name: str, expr: Expr, width: int) -> None:
         """A temp hoisted INSIDE a generate whose expression reads a lane is itself a lane, by
@@ -1416,6 +1488,20 @@ class _ExprMixin:
             # a packed WORD select a[i] is a bit/element SLICE (val(a,i,..) would be a phantom lane).
             # A NESTED packed select a[i][j] (base is itself a select, no .symbol) recurses: the inner
             # select lowers to a Slice and the outer is a slice-of-that (@slc composes).
+            # -- except the CONSTANT-BANK genvar select `sig[1][gv + c]`, which is the flat lane
+            # `gv + (bank*W + c)`: a lane read, exactly as `x[i+1]` below (`_genvar_offset_select`).
+            if _enum_name(base.kind) == "ElementSelect" and not (subst and self._select_root(e) is not None
+                                                                   and self._select_root(e).name in subst):
+                os_ = self._genvar_offset_select(e)
+                gvi = self._genvar_laneidx(e.selector) if os_ is not None else None
+                if os_ is not None and gvi is not None:
+                    name, off = os_
+                    ew = getattr(getattr(e, "type", None), "bitWidth", 1) or 1
+                    self._lane_dims[name] = max(self._lane_dims.get(name, 0), 1)
+                    self._note_lane_elem_w(name, ew)
+                    if off == 0:
+                        return ElemSel(name, gvi)
+                    return ElemSel(name, BinOp("add" if off > 0 else "sub", gvi, Const(abs(off), 32), 32))
             if _enum_name(base.kind) == "NamedValue":
                 name = base.symbol.name
                 # A NEIGHBOURING-LANE read `x[i-1]` / `x[i+1]` of a packed signal is a lane read

@@ -844,13 +844,13 @@
 
 - id: lane-ternary-selector
   date: 2026-09-04
-  status: open
+  status: fixed
   found: "writing the conditional-branch row: `enc[i] = flip[i] ? ~bi : bi` (a lane target, a lane-bit selector, a generate-local in the arms) is refused `ternary with unsupported selector for enc` (probe r11)"
   what: "a ternary on a lane target whose selector is a lane bit and whose arms read a generate-local is refused"
   why: "not reduced further today; the row was rewritten around it so the local-net fix could be witnessed on its own"
-  fix: ~
-  gate: []
-  docs: []
+  fix: "lowers in both modes since the fifth field report's fixes (2026-09-07, F65: a lane target's conditional reads its selector per lane; the generate-local is a lane by construction) -- `val(enc(I), V1, T) :- val(flip(I), 1, T), val(bi(I), V0, T), V1 = @bnot(V0, 3).`"
+  gate: ["sweep:lane_ternary_selector_local"]
+  docs: [SV_FEATURE_COVERAGE.md]
 
 - id: bitvec-lane-member-and-nested-slice
   date: 2026-09-04
