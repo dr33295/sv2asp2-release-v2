@@ -612,6 +612,25 @@ class PyslangFrontend(_TypesMixin, _ExprMixin, _StmtMixin, _ModuleMixin):
         treats it as structural rather than `unaccounted`."""
         sm = tree.sourceManager
         lines: set[int] = set()
+        # Only tokens of THIS file count. A token from an `include or a macro expansion used to
+        # add the INCLUDE's line number to this file's live set, so a skipped `ifdef block whose
+        # lines happened to coincide with a long header's lines was "live" with no span --
+        # UNACCOUNTED -- and before F74 the mis-attributed include members had covered exactly
+        # those lines, the two errors cancelling (the ninth field report, 2026-09-08: 44 lines
+        # of DV checkers under a define the reporter never sets).
+        own = None
+        try:
+            own = sm.getFileName(tree.root.sourceRange.start) if hasattr(tree.root, "sourceRange") else None
+        except Exception:
+            own = None
+
+        def where(loc):
+            try:
+                while sm.isMacroLoc(loc):
+                    loc = sm.getExpansionLoc(loc)
+            except Exception:
+                pass
+            return sm.getFileName(loc), sm.getLineNumber(loc)
 
         def collect(n: object) -> None:
             try:
@@ -621,7 +640,9 @@ class PyslangFrontend(_TypesMixin, _ExprMixin, _StmtMixin, _ModuleMixin):
             for c in children:
                 if isinstance(c, pyslang.Token):
                     if c.kind != pyslang.TokenKind.EndOfFile:
-                        lines.add(sm.getLineNumber(c.location))
+                        f, ln = where(c.location)
+                        if own is None or f == own:
+                            lines.add(ln)
                 elif c is not None:
                     collect(c)
 
