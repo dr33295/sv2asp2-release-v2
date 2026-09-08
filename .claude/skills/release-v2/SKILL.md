@@ -32,6 +32,37 @@ Nothing is written into the tools folder. A refusal is information: change the i
 the installed tool. A gap in the tool goes back to the maintainer with `--report issue.txt`
 (every verb takes it) and a minimised probe of your own.
 
+## Translating EXISTING RTL (the field workflow)
+
+The translator (`sv2asp --sources sources.json -o out/`, flat; `--mode modular -o dir/`) reads
+a real block through its manifest, and three manifest keys decide what a real tree needs:
+
+- **Plugins** (`sv2asp.toml`, `[primitives] plugins = ["plugin.py"]`; a module-level `PRIMS`
+  dict) register vendor cells against the registry's categories -- `flop`, `latch`, `vcmux`,
+  `clock_gate`, `comb`, and `comb_w` for decode/encode/find-first cells whose builder needs
+  every pin's WIDTH. A cell with no synthesizable body still needs an interface-only module in
+  the source list so the instance elaborates; a mis-named pin on a fixed-pin cell is refused by
+  name with the entry's pins.
+- **Functional stubs** (`"stubs": {module: "stub.lp"}`) replace a block by a hand-written ASP
+  model over its port names (`@INST@(port)`), when you KNOW what the block does.
+- **Black boxes** (`"blackbox": {module: {}}`, or `{module: {"outputs": ["Q", ..]}}` when no
+  definition is in scope -- a memory wrapper whose macros are not in the tree) replace a block
+  by NOTHING: its body is not translated and every output is unconstrained at every instant,
+  one answer set per value, so a property over its consumers holds for every value the box
+  could produce. Pin an output in the scenario (`val(<inst>(<port>), V, T)`) to model it cycle
+  by cycle; an output wider than 20 bits is not enumerated and MUST be pinned. A declared box
+  that never binds is loud, like a stub. Use a stub when the behaviour matters to the claim, a
+  black box when any behaviour must do.
+
+Read the run's `coverage:` line as the verdict: a PROBLEM line names a construct the tool did
+not lower, and the program must not be used (`--allow-problems` only to look). `--coverage
+FILE` writes the LINE report -- every source line with its status -- which is what settles a
+header line or port declaration tagged in the summary. A `DARK READ` is a consumer whose
+producer did not lower: fix the named construct's refusal first; a `WARNING (BUDGET ..)` names
+a wide word's cost, not a defect. Report a gap with `--report issue.txt` plus the coverage
+file and a minimised probe under generic names; the maintainer reconstructs from those and
+never needs the design.
+
 ## The ladder governs everything
 
 Every artifact is a rung: `specification, signature, dsl, contract, design, certificate, rtl`.
@@ -219,6 +250,8 @@ exit codes directly, never through a pipe; verify a claim before a message claim
 | `WARNING (BUDGET: the word of X ...)` / `NOT assembled` | a wide per-bit word is (or is not) built from its bits; the cost is named | pinned runs are fine; a free power-on will explode -- read bits, or a window |
 | `TIMEOUT` with `Solving: 0.00s` | grounding, not search: something is enumerated | profile (`gringo --text \| sed -E 's/[(:].*//' \| sort \| uniq -c \| sort -rn`), then digits, tokens, or `opaque_datapath.` |
 | `DARK READ: X is READ but never DERIVED` (round trip) | the print does not translate back completely | a translator gap: `--report`, and a minimised probe |
+| `undefined instance U of 'M' (no module definition or primitive stub in scope)` | a cell or wrapper the tree does not define | a plugin entry (a library cell), a stub (a block whose behaviour matters), or a black box with its outputs listed (a macro whose any value must do) |
+| `UNSUPPORTED <line in the port list>` / `UNACCOUNTED <port name>` in the summary | the summary attributes a problem, or a never-used declaration, to a header line | `--coverage FILE` and read the line's status there; send the file with the report |
 | `FAIL obligations: no model instance is derivable at the window's end -- UNREACHABLE` | no `model(...)` atom exists at the span's last instant: the `delivered` condition never holds within `obligation_span`, or the span is shorter than the lookback | check the span against the deepest `T-k` in the rule; check the enabling condition can hold from a free start |
 | `VERILATOR COMPARED NO DEFINITE SAMPLE` / `ICARUS COMPARED ...` | the bench matched nothing (a naming mismatch, or every sample power-on dependent) | not a round trip; report it |
 | `verilator: N sample(s) not definite -- skipped` | those values depend on unreset state (the two power-on fills disagree); Icarus would print x there | expected for unreset memory cells; if a RESET register appears here, its reset is not reaching the print |

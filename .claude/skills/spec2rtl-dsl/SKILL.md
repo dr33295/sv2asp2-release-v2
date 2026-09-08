@@ -336,6 +336,9 @@ measurements behind each clause).
   modules need not have one — the compiler's entry-independent evidence is the Stage-5
   differential and the Lean schema meanings.
 - **A gap goes back to the maintainer, never around**: re-run with `--report issue.txt`
+  (and, for a translation, `--coverage FILE` -- the line report -- plus a minimised probe
+  under generic names; a block that must not be expanded is a `blackbox` in the manifest,
+  see the release skill's "Translating EXISTING RTL")
   (every verb takes it) and send that file — tool version, resolved toolchain, command,
   output, nothing from the design. Never patch the installed tool: a certificate from a
   modified tool means nothing.

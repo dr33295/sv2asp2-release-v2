@@ -926,3 +926,16 @@ tool's own output. It carries nothing from your design; attach a *minimised prob
 can make one, but never your block. Your design is yours, exactly as the tool's internals
 are the maintainer's. A fix comes back as a new version, with the case added to the gates
 in Part A.
+
+**When the TRANSLATOR refuses a construct of existing RTL** (the round trip, or a real block
+read through `sv2asp --sources sources.json`), two more things help a diagnosis. `--coverage
+FILE` writes the line report — every source line with its status — which settles a header
+line or a port declaration that the summary tagged; send it with `issue.txt`. And a probe
+under *generic names*: the maintainer reconstructs every group from a synthetic design and
+records nothing of yours, so a probe that reproduces the refusal with the names changed is
+worth more than a description. Two manifest keys take a block out of the translation
+honestly: a **functional stub** (`"stubs"`) models it by hand when its behaviour matters to
+the claim; a **black box** (`"blackbox"`, with its outputs listed when no definition is in
+scope, as for a memory wrapper whose macros are not in the tree) models nothing, so every
+output is any value at every instant and a property over its consumers holds for every value
+it could produce. Never an interface-only body that quietly returns zeros.
