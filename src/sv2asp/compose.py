@@ -433,7 +433,9 @@ def find_dark_reads_flat(text: str, extern: set[str] | None = None) -> list[str]
             # so it is DRIVEN from outside the design layer -- not a missing producer. Without this
             # every design with an `x` don't-care would be refused as a dark read
             # (notes/design/X_SEMANTICS.md D4).
-            inputs.add(ln[len("dontcare_at("):].split(",", 1)[0].strip())
+            _h = ln.partition(":-")[0].strip()                  # the HEAD only: the body has parens too
+            _a = split_args(_h[len("dontcare_at("): _h.rindex(")")])
+            inputs.add(_a[1] if len(_a) == 3 and _a[0] == "Inst" else _a[0])   # modular: (Inst, s, T)
             continue
         if not ln.startswith("val("):
             continue
@@ -480,6 +482,14 @@ def find_dark_reads(outdir: pathlib.Path,
             if ln.startswith("port(Inst, ") and ", input)" in ln:
                 a = split_args(ln[len("port(") : ln.rindex(")")])
                 if len(a) >= 2:
+                    inputs.add((p.name[:-3], a[1]))
+            if ln.startswith("dontcare_at(Inst, "):
+                # declared unconstrained (an assigned `x`, a black box's output): the modular
+                # companion supplies the choice per instance -- driven from outside the design
+                # layer, exactly as the flat check reads it (`find_dark_reads_flat`)
+                h = ln.partition(":-")[0].strip()
+                a = split_args(h[len("dontcare_at(") : h.rindex(")")])
+                if len(a) == 3:
                     inputs.add((p.name[:-3], a[1]))
     for p in manifest:
         for ln in p.read_text().splitlines():

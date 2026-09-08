@@ -51,7 +51,11 @@ def instance_index(line: str, spec: str, derived: frozenset[str] = frozenset()) 
         # disconnected from its init companion and every projection -- in modular only,
         # a flat/modular divergence of exactly the class hard rule 1 exists to stop
         # (found by the miss-queue regeneration's round trip, 2026-08-31).
-        names = ("val", "addr", "mem_hold", "mem_nowrite", "lane")
+        # `dontcare_at` is per instance too: without it the head lost the instance while the
+        # body kept `isa(Inst, ..)`, two instances collided on one declaration, and no modular
+        # companion turned it into a choice -- the assigned-x feature was flat-only, silently
+        # (the dark-read check exempts the head, so `y` had no value at all; 2026-09-08).
+        names = ("val", "addr", "mem_hold", "mem_nowrite", "lane", "dontcare_at")
         out, depth, i = [], 0, 0
         while i < len(s):
             c = s[i]

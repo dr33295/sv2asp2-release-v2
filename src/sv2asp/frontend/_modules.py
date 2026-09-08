@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 
 
 from .. import primitives
-from ..ir.expr import (BinOp, BitSel, Concat, Cond, Const, Expr, LaneIdx, MemRef, Ref, Slice,
-                       UnOp)
+from ..ir.expr import (BinOp, BitSel, Concat, Cond, Const, ElemSel, Expr, LaneIdx, MemRef, Ref,
+                       Slice, UnOp)
 from ..ir.internal_clocks import classify_internal_clocks
 from ..ir.enumval import _with_x_check, enum_reads_as_numbers
 from ..ir.nodes import (
@@ -69,6 +69,7 @@ class _ModuleMixin:
         saved_lanes, self._lane_dims = self._lane_dims, {}
         saved_elemw, self._lane_elem_w = self._lane_elem_w, {}
         saved_gl, self._gen_locals = self._gen_locals, {}                 # per module (the F15 lesson)
+        saved_tp, self._temp_pdims = self._temp_pdims, {}                 # per module too
         saved_lf, self._lane_fields = self._lane_fields, {}                # lane fields, per module too
         saved_rlr, self._reg_lane_range = self._reg_lane_range, {}   # per module (the F15 lesson)
         saved_ifp, self._iface_ports = self._iface_ports, set()
@@ -299,7 +300,10 @@ class _ModuleMixin:
             elif k == "UninstantiatedDef":   # a cell with NO module definition -- but it may be a
                 cell = getattr(m, "definitionName", None) or "?"   # library PRIMITIVE (ACME_FF, VCMUX,
                 spec = primitives.lookup(cell)                     # ...) -> lower via the schema, §2.10
-                if spec is not None:
+                if cell in self._blackboxes:                       # a BLACK BOX with no definition in scope
+                    self._try_lower(lambda m=m: self._lower_blackbox_uninst(m, ctx),
+                                    m, "black box (no definition in scope)", flagged)
+                elif spec is not None:
                     self._try_lower(lambda m=m, spec=spec: self._lower_uninst_primitive(
                         m, spec, ctx),
                         m, "primitive (uninstantiated def)", flagged)
@@ -340,6 +344,7 @@ class _ModuleMixin:
             w = s.irtype.width if isinstance(s.irtype.width, int) else 1
             signals[n] = Signal(**{**s.__dict__, "irtype": IRType(s.irtype.kind, ext * w, sv_base=s.irtype.sv_base,
                                                                   four_state=s.irtype.four_state)})
+        temp_pdims_local, self._temp_pdims = self._temp_pdims, saved_tp
         lane_dims_local, self._lane_dims = self._lane_dims, saved_lanes
         lane_elemw_local, self._lane_elem_w = self._lane_elem_w, saved_elemw
         self._gen_locals = saved_gl
@@ -394,7 +399,7 @@ class _ModuleMixin:
             lane_domains=dict(lane_domains_local),
             enums=tuple(enums.values()),
             cells=tuple(cells),
-            packed_dims=dict(packed),
+            packed_dims={**packed, **temp_pdims_local},   # + the extents of nested-generate temps
             flagged=tuple([*flagged, *self._unbound_stub_problems(),
                            *self._unapplied_override_problems(),
                            *self._unused_intake_problems(getattr(self, "_compiled_files", []))]),
@@ -436,6 +441,25 @@ class _ModuleMixin:
             return [CombItem(lhs=op.symbol.name, rhs=val, loc=loc)]
         if k == "MemberAccess":
             return [CombItem(lhs=self._member_name(op), rhs=val, loc=loc)]
+        gs = self._genvar_select_dims(op) if (self._genvars and k == "ElementSelect") else None
+        if gs is not None:
+            # `.out(y[i])` INSIDE a generate: a lane write over the loop's range, exactly as
+            # `assign y[i] = ..` is. The part-select branch below folds the genvar to ONE
+            # iteration's constant (D1's shape) and wrote lane 0 with the rest tied to 0 --
+            # silent, exit 0 (the sixth report's primitives in generates, 2026-09-08).
+            base, dims = gs
+            root = self._select_root(op)
+            if root is not None and getattr(getattr(root, "type", None), "isUnpackedArray", False):
+                raise NotImplementedError(f"primitive output on a cell of an unpacked array "
+                                          f"inside a generate (`{base}[i]`) (deferred)")
+            self._lane_dims[base] = max(self._lane_dims.get(base, 0), dims)
+            self._note_lane_elem_w(base, w)
+            return [CombItem(lhs=base, rhs=val, loc=loc, lane_hi=self._lane_hi,
+                             lane_lo=self._lane_lo, lane_step=self._lane_step)]
+        if self._genvars and k in ("ElementSelect", "RangeSelect") and self._lhs_index_uses_genvar_arith(op):
+            raise NotImplementedError(f"primitive output on `{str(getattr(op, 'syntax', '')).strip()}`: "
+                                      f"the genvar is used arithmetically in the target's index "
+                                      f"(it would fold to one iteration) (deferred)")
         pw = self._partselect_lhs(op)
         if pw is not None:
             target, tw, poff, pw_ = pw
@@ -798,6 +822,13 @@ class _ModuleMixin:
             rhs_expr = self._lower_expr(a.right, top=True)
             if lane_w:
                 rhs_expr = self._truncate_to_lane(rhs_expr, lane_w)
+            if isinstance(rhs_expr, Cond) and (lane_w or getattr(getattr(left, "type", None),
+                                                                 "bitWidth", 1) or 1) == 1:
+                # G27a on a LANE target: a boolean arm (`sel ? x[w] : (bk == w)`) is hoisted into
+                # a named lane-local bit; the lane conditional's arms are read by the word body,
+                # which knows no `==` (`word expr BinOp`, the sixth field report). The plain
+                # continuous-assign site has done this since F29; this site had not.
+                rhs_expr = self._hoist_bool_arms(rhs_expr, loc)
             if base not in self._lane_dims and _has_implicit_lane_ref(rhs_expr, self._lane_dims):
                 # the RHS names no genvar in the TEXT but reads a lane BY CONSTRUCTION -- a
                 # generate-local net (`enc[i] = bi ^ 5` with `logic [2:0] bi` declared in the
@@ -1198,30 +1229,133 @@ class _ModuleMixin:
                                      f"is not a whole lane at a lane boundary (deferred)"))
                 continue
             if target in self._lane_dims:
-                # A part covering a RUN of whole lanes (`ck[23:0] = {24{v}}`, `ck[31:24] = 8'd0`)
-                # is a partial lane loop over that run when every lane gets the SAME value: the
-                # replication's unit, or a constant whose per-lane slices agree.
+                # A LANE signal written by WORD slices: its lanes are DERIVED from the slices.
+                # A run of lanes lying entirely inside one part reads that part at the
+                # lane-affine offset `I*ew - off` (one rule per run); a lane that straddles two
+                # parts, or a part and a gap, gets its own rule from constant pieces, the gap
+                # tied to 0 as the word path ties it. Before 2026-09-08 only a part that was
+                # exactly one lane (or, F62, a run holding one value) was accepted, and the
+                # refusal cited the LAST part's line -- so of two whole-element decoder writes
+                # `dec[0] = ..; dec[1] = ..` on a net read as one-bit lanes, element 1 looked
+                # guilty and element 0 innocent (the sixth field report's "asymmetry").
+                if self._lane_dims[target] != 1:
+                    flagged.append((ordered[0][3], f"partial write to lane signal {target}: word "
+                                    f"slices of a NESTED lane signal are not derived per lane (deferred)"))
+                    continue
+                if width % ew:
+                    flagged.append((ordered[0][3], f"partial write to lane signal {target}: its width "
+                                    f"{width} is not a multiple of its lane width {ew} (deferred)"))
+                    continue
+                overlap = False
+                pos = 0
+                for off, w, _v, _l in ordered:
+                    if off < pos:
+                        overlap = True
+                    pos = max(pos, off + w)
+                if overlap:
+                    flagged.append((ordered[0][3], f"partial write to {target}: overlapping slices "
+                                         "(multi-driver, not modeled)"))
+                    continue
+                nlanes = width // ew
+                mask = (1 << ew) - 1
+                # lanes an existing LANE-ROLLED writer of this target already drives (a generate's
+                # `y[i] = ..` beside `assign y[0] = ..`): no rule here -- tying them to 0 gave the
+                # lane two values (multi-valued, UNSAT = "no counterexample"); a slice overlapping
+                # one is a multi-driver, refused
+                rolled = [((it.lane_lo or 0) + getattr(it, "lane_off", 0),
+                           (it.lane_hi if it.lane_hi is not None else nlanes) + getattr(it, "lane_off", 0))
+                          for it in comb if isinstance(it, CombItem) and it.lhs == target]   # the HEAD lanes (`c[i+1]`)
+
+                def _rolled(lane: int) -> bool:
+                    return any(lo_ <= lane < hi_ for lo_, hi_ in rolled)
+
+                for off, w, _v, pl in ordered:
+                    if any(_rolled(k) for k in range(off // ew, (off + w - 1) // ew + 1)):
+                        overlap = True
+                        break
+                if overlap:
+                    flagged.append((ordered[0][3], f"partial write to lane signal {target}: a slice "
+                                    f"overlaps a lane the generate writes (multi-driver, not modeled)"))
+                    continue
+
                 def _run_unit(off: int, w: int, v):
+                    """The SAME value in every lane of a run: the part itself when it is one lane
+                    wide, a replication's unit (F62), a constant whose lane slices agree."""
                     if w == ew:
                         return v
                     if isinstance(v, Const):
-                        mask = (1 << ew) - 1
                         vals = {(v.value >> (k * ew)) & mask for k in range(w // ew)}
                         return Const(vals.pop(), ew) if len(vals) == 1 else None
                     rp = getattr(self, "_partial_repl", {}).get(getattr(v, "name", None))
                     return rp[0] if rp is not None and rp[1] == ew else None
-                if self._lane_dims[target] == 1 and all(
-                        w % ew == 0 and off % ew == 0 and _run_unit(off, w, v) is not None
-                        for off, w, v, _l in ordered):
+
+                def _piece(v, a: int, b: int, off: int):
+                    """Bits [a..b] of a part that starts at bit `off`, as an (b-a+1)-bit value."""
+                    pw = b - a + 1
+                    if isinstance(v, Const):
+                        return Const((v.value >> (a - off)) & ((1 << pw) - 1), pw)
+                    if isinstance(v, Slice):
+                        return Slice(v.base, v.lo + b - off, v.lo + a - off)
+                    return Slice(v, b - off, a - off) if isinstance(v, Ref) else None
+
+                def _covering(lane: int):
+                    lo_b, hi_b = lane * ew, (lane + 1) * ew - 1
                     for off, w, v, pl in ordered:
-                        comb.append(CombItem(lhs=target, rhs=_run_unit(off, w, v), loc=pl,
-                                             lane_lo=off // ew, lane_hi=(off + w) // ew))
+                        if off <= lo_b and off + w - 1 >= hi_b:
+                            return (off, w, v, pl)
+                    return None
+
+                plan = []                      # (lane_lo, lane_hi_exclusive, rhs, loc)
+                lane = 0
+                bad = None
+                while lane < nlanes and bad is None:
+                    part = _covering(lane)
+                    if part is not None:
+                        off, w, v, pl = part
+                        hi = lane
+                        while hi < nlanes and _covering(hi) == part:
+                            hi += 1
+                        unit = _run_unit(off, w, v) if (off % ew == 0 and w % ew == 0) else None
+                        if unit is not None:
+                            rhs = unit
+                        elif isinstance(v, (Ref, Slice, Const)):
+                            base, boff = (v.base, off - v.lo) if isinstance(v, Slice) else (v, off)
+                            sh = BinOp("mul", LaneIdx(0), Const(ew, 32), 32) if ew != 1 else LaneIdx(0)
+                            if boff:
+                                sh = BinOp("sub" if boff > 0 else "add", sh, Const(abs(boff), 32), 32)
+                            rhs = BinOp("and", BinOp("shr", base, sh, ew), Const(mask, ew), ew)
+                        else:
+                            bad = f"a part of an unsupported shape ({type(v).__name__})"
+                            break
+                        plan.append((lane, hi, rhs, pl))
+                        lane = hi
+                        continue
+                    if _rolled(lane):
+                        lane += 1
+                        continue
+                    lo_b, hi_b = lane * ew, (lane + 1) * ew - 1
+                    expr = None
+                    ploc = loc
+                    for off, w, v, pl in ordered:
+                        a, b = max(lo_b, off), min(hi_b, off + w - 1)
+                        if a > b:
+                            continue
+                        pc = _piece(v, a, b, off)
+                        if pc is None:
+                            bad = f"a part of an unsupported shape ({type(v).__name__})"
+                            break
+                        pc = BinOp("shl", pc, Const(a - lo_b, 32), ew) if a > lo_b else pc
+                        expr = pc if expr is None else BinOp("or", expr, pc, ew)
+                        ploc = pl
+                    if bad is not None:
+                        break
+                    plan.append((lane, lane + 1, expr if expr is not None else Const(0, ew), ploc))
+                    lane += 1
+                if bad is not None:
+                    flagged.append((ordered[0][3], f"partial write to lane signal {target}: {bad} (deferred)"))
                     continue
-                # Any other slice of a LANE signal has no per-lane reading: the word assembly
-                # below would be emitted as a per-lane rule (the value of the whole word in
-                # every lane) -- refuse rather than that.
-                flagged.append((loc, f"partial write to lane signal {target}: a slice that is not "
-                                     f"a whole lane at a lane boundary (deferred)"))
+                for lo, hi, rhs, pl in plan:
+                    comb.append(CombItem(lhs=target, rhs=rhs, loc=pl, lane_lo=lo, lane_hi=hi))
                 continue
             # detect overlap (a real error) while walking; fill gaps with Const(0, gapw).
             overlap = False
@@ -1889,6 +2023,7 @@ class _ModuleMixin:
                 continue
             pin_expr[nm] = e
             pin_w[nm] = getattr(getattr(e, "type", None), "bitWidth", 1) or 1
+        self._check_prim_pins(spec, mod, node.name, pin_expr)
 
         def add_cell(*outs: str) -> None:
             cells.append(CellInfo(inst=node.name, cell_type=mod.lower(),
@@ -1943,6 +2078,11 @@ class _ModuleMixin:
                 flagged.append((loc, f"primitive {mod} {node.name}: flop needs clk/d/q connected"))
                 return
             q_e = pin_expr[qpin]
+            gs = self._genvar_select_dims(self._peel(q_e)) if self._genvars else None
+            if gs is not None:
+                self._lower_lane_flop(node, spec, mod, gs, pin_expr, pin_w, pin_name, loc, seq,
+                                      reg_names, add_cell)
+                return
             qk = _enum_name(q_e.kind)
             ps = self._partselect_lhs(q_e) if qk in ("RangeSelect", "ElementSelect") else None
             if qk == "NamedValue":
@@ -2062,9 +2202,9 @@ class _ModuleMixin:
                     return
                 rhs = next(iter(pinmap.values()))
             elif spec.category == "comb_w":          # the builder sees every pin's actual width
-                rhs = spec.build(pinmap, dict(pin_w))
+                rhs = self._build_prim(spec, mod, node.name, pinmap, dict(pin_w))
             else:
-                rhs = spec.build(pinmap)
+                rhs = self._build_prim(spec, mod, node.name, pinmap)
             out_e = pin_expr[spec.out]
             if _enum_name(out_e.kind) == "Concatenation":
                 self._hoist_ctx = node.name
@@ -2220,12 +2360,172 @@ class _ModuleMixin:
         its entire implementation, silently -- so any proof then runs against the very thing the
         stub was meant to abstract away. Declaring a stub is an explicit instruction; failing to
         apply it must never be quiet."""
-        missing = sorted(set(self._stubs) - set(getattr(self, "_stubs_used", set())))
-        return [(Loc(f"<stub:{m}>", 0),
-                 f"stub declared for module '{m}' in sources.json never bound: no instance of "
-                 f"that module was found, so it was NOT stubbed. Check the name against the "
-                 f"RTL (case-sensitive); the module is otherwise translated in full")
-                for m in missing]
+        used = set(getattr(self, "_stubs_used", set()))
+        missing = sorted(set(self._stubs) - used)
+        out = [(Loc(f"<stub:{m}>", 0),
+                f"stub declared for module '{m}' in sources.json never bound: no instance of "
+                f"that module was found, so it was NOT stubbed. Check the name against the "
+                f"RTL (case-sensitive); the module is otherwise translated in full")
+               for m in missing]
+        out += [(Loc(f"<blackbox:{m}>", 0),
+                 f"black box declared for module '{m}' in sources.json never bound: no instance "
+                 f"of that module was found, so nothing was black-boxed. Check the name against "
+                 f"the RTL (case-sensitive); the module is otherwise translated in full")
+                for m in sorted(set(self._blackboxes) - used)]
+        return out
+
+    def _is_modelled(self, mod: str) -> bool:
+        """A module the user asked to MODEL rather than translate: a functional stub (hand-written
+        rules) or a black box (no rules at all -- every output unconstrained)."""
+        return mod in self._stubs or mod in self._blackboxes
+
+    def _blackbox_text(self, mod: str, name: str, outs: list[tuple[str, int]]) -> str:
+        """The generated 'stub' of a BLACK BOX: its body is not translated, and every output is
+        declared unconstrained at every instant -- `dontcare_at`, the same value-free statement an
+        assigned `x` makes, so the boundary companion supplies the choice (one answer set per
+        value: a property over the box's consumers must hold for EVERY value the box could
+        produce) and the dark-read check knows the output is driven from outside the design
+        layer. An output wider than the enumeration cap gets the companion's guidance instead of
+        a choice; the scenario pins it. A pinned `val(<inst>(<out>), V, T)` in a scenario
+        satisfies the choice, so a scenario can model the box cycle by cycle without a stub."""
+        lines = [f"% BLACK BOX: {mod} {name} (sources.json `blackbox`) -- body NOT translated; every",
+                 "% output is UNCONSTRAINED at every instant (any value; one answer set per value).",
+                 "% Pin `val(<inst>(<out>), V, T)` in a scenario to model it, or write a functional stub."]
+        for formal, w in outs:
+            term = f"{self._cid(name)}({self._cid(formal)})"    # the emitter's spelling of inst(port)
+            lines.append(f"blackbox({term}, {w}).")
+            lines.append(f"dontcare_at({term}, T) :- time(_, T).")
+        return "\n".join(lines)
+
+    def _lower_blackbox_uninst(self, node, ctx: LowerCtx) -> None:
+        """A BLACK BOX whose module has NO definition in scope (a memory wrapper whose macros are
+        not in the tree). Pins come from `portNames`/`portConnections`; directions from the
+        manifest's `outputs` list (required here -- nothing else says which way a pin faces);
+        widths from the parent's actual expressions."""
+        mod = node.definitionName
+        spec = self._blackboxes.get(mod) or {}
+        if "outputs" not in spec:
+            raise NotImplementedError(
+                f"black box {mod} {node.name}: no module definition in scope, so its OUTPUT ports "
+                f"must be listed in sources.json (`\"blackbox\": {{\"{mod}\": {{\"outputs\": [..]}}}}`)")
+        outs = set(spec["outputs"])
+        ports = []
+        for nm, c in zip(list(node.portNames), list(node.portConnections), strict=False):
+            e = getattr(c, "expr", None)
+            if e is None:
+                continue
+            ports.append((nm, "Out" if nm in outs else "In", e, None,
+                          getattr(getattr(e, "type", None), "bitWidth", 1) or 1))
+        seen = {nm for nm, *_ in ports}
+        for o in sorted(outs - seen):
+            raise NotImplementedError(f"black box {mod} {node.name}: listed output `{o}` is not a "
+                                      f"connected pin of this instance")
+        self._bridge_modelled_ports(node.name, mod, ports, ctx.comb, ctx.cells, ctx.signals,
+                                    ctx.flagged, self._loc(node))
+
+    @staticmethod
+    def _build_prim(spec, mod: str, name: str, pinmap, widths=None):
+        """The registry builder, with an UNCONNECTED pin named rather than a KeyError leaked."""
+        try:
+            return spec.build(pinmap, widths) if widths is not None else spec.build(pinmap)
+        except KeyError as ex:
+            raise NotImplementedError(f"{spec.category} {mod} {name}: pin {ex.args[0]!r} is not "
+                                      f"connected (the registry entry needs it)") from None
+
+    @staticmethod
+    def _check_prim_pins(spec, mod: str, name: str, connected) -> None:
+        """A connected pin the primitive's registry entry does not name -- `.a(..)` on a cell whose
+        pins are A1/A2/Z -- was a KeyError out of the builder (a leaked crash, not a refusal; the
+        sixth field report's probes, 2026-09-08). Named here, with the entry's pins."""
+        if spec.category not in ("flop", "latch", "vff", "clock_gate", "vcmux"):
+            return          # comb/comb_w/wire/mux: the inputs are free-form (In0..InN) -- no fixed pin map
+        known = set(spec.pins.values()) | ({spec.out} if getattr(spec, "out", None) else set())
+        extra = [p for p in connected if p not in known]
+        if extra:
+            raise NotImplementedError(
+                f"{spec.category} {mod} {name}: pin(s) {', '.join(sorted(extra))} are not pins of "
+                f"the registry entry for {mod} (its pins: {', '.join(sorted(known))}) -- register "
+                f"the cell's real pin names in a plugin, or connect by the entry's names")
+
+    def _lower_lane_flop(self, node, spec, mod, gs, pin_expr, pin_w, pin_name, loc, seq,
+                         reg_names, add_cell) -> None:
+        """A FLOP PRIMITIVE inside a generate with per-iteration pins (`FF ff (.q(q[i]),
+        .d(d[i]) ..)`): the lane register the equivalent `always_ff` gets -- one `SeqItem` over
+        the loop's range, the D input read lane-aware. Refused by name before 2026-09-08 (the
+        sixth field report's §5).
+
+        THE LIFT (the user's decision, 2026-09-08): a packed multi-dimensional net whose whole
+        ROW is captured, `FF #(6) ff (.q(q[b]), .d(x[b]))` on `logic [1:0][5:0] q, x`, is six
+        one-bit flops and nothing six-bit -- so it becomes a two-dimensional lane register of
+        one-bit lanes, `q(I, J) <= x(I, J)`, `J` a synthesized inner index over the row. That
+        keeps ONE lane view per net (the reporter's `x` is written per bit in a nested generate
+        and its `q` read per bit downstream), and it is decided from the DECLARATION alone --
+        never from what else the module happens to do with the net (the F17 lesson)."""
+        qpin, dpin = spec.pins["q"], spec.pins["d"]
+        q, dims = gs
+        pw = pin_w.get(qpin, 1)
+        _q_e = pin_expr[qpin]
+        if _enum_name(_q_e.kind) == "Assignment":            # the instantiated path wraps an output actual
+            _q_e = _q_e.left
+        qroot = self._select_root(self._peel(_q_e))
+        if qroot is not None and getattr(getattr(qroot, "type", None), "isUnpackedArray", False):
+            raise NotImplementedError(f"flop {mod} {node.name}: q on a cell of an unpacked array "
+                                      f"inside a generate (deferred)")
+        pd = self._packed_dims(qroot.type) if qroot is not None else ()
+        lift = pw > 1 and len(pd) == dims + 1 and pd[-1] == pw
+        inner = LaneIdx(len(self._genvar_order))          # the synthesized inner index (J after I)
+        if lift:
+            dims += 1
+            self._lane_dims[q] = max(self._lane_dims.get(q, 0), dims)
+            self._note_lane_elem_w(q, 1)
+        else:
+            self._lane_dims[q] = max(self._lane_dims.get(q, 0), dims)
+            self._note_lane_elem_w(q, pw)
+        rng = (self._lane_lo, self._lane_hi, self._lane_step, 0)
+        prev = self._reg_lane_range.get(q)
+        if prev is not None and prev != rng:
+            raise NotImplementedError(f"{q}: lane-written by two loops over different index sets "
+                                      f"({prev} and {rng}) -- one index set per lane register (deferred)")
+        self._reg_lane_range[q] = rng
+        clk = pin_name(spec.pins["clk"], "clock")
+        d_e = self._peel(pin_expr[dpin])
+        d = None
+        if lift:
+            dgs = self._genvar_select_dims(d_e)
+            droot = self._select_root(d_e) if dgs is not None else None
+            dpd = self._packed_dims(droot.type) if droot is not None else ()
+            if (dgs is not None and dgs[1] == dims - 1 and len(dpd) == dims and dpd[-1] == pw
+                    and not getattr(getattr(droot, "type", None), "isUnpackedArray", False)):
+                # the D row of another packed net: the same lift, bit J of row I
+                self._lane_dims[dgs[0]] = max(self._lane_dims.get(dgs[0], 0), dims)
+                self._note_lane_elem_w(dgs[0], 1)
+                idxs = [LaneIdx(self._genvar_order.index(v)) for v in self._genvar_select_vars(d_e)]
+                d = ElemSel(dgs[0], idxs[0], more=(*idxs[1:], inner))
+        if d is None:
+            d = self._lower_expr(pin_expr[dpin])
+            if lift:                                       # any other row value: its bit J
+                d = BinOp("and", BinOp("shr", d, inner, 1), Const(1, 1), 1)
+            if not isinstance(d, (Ref, Const, ElemSel)):
+                self._hoist_ctx = q
+                d = self._hoist_word(d, 1 if lift else pw, loc)
+                self._hoist_ctx = ""
+        guards: tuple = ()
+        enpin = spec.pins.get("en")
+        if enpin is not None and enpin in pin_expr:
+            en_e = self._lower_expr(pin_expr[enpin])
+            if not (isinstance(en_e, Const) and en_e.value == 1):
+                self._hoist_ctx = q
+                en_ref = en_e if isinstance(en_e, Ref) else self._hoist_bit(en_e, loc)
+                self._hoist_ctx = ""
+                guards = ((en_ref.name, 1),)
+        reset = None
+        if spec.reset and spec.pins.get("rstL") in pin_expr:
+            reset = Reset(signal=pin_name(spec.pins["rstL"], "reset"), active=spec.reset, kind="async")
+        reg_names.add(q)
+        seq.append(SeqItem(reg=q, clock=clk, reset=reset, branches=(Branch(guards=guards, value=d),),
+                           has_hold=bool(guards), loc=loc, reset_value=0,
+                           lane_hi=self._lane_hi, lane_lo=self._lane_lo, lane_step=self._lane_step))
+        add_cell(q)
 
     def _lower_stubbed_instance(self, inst, mod, comb, cells, signals, flagged) -> None:
         """Project-local FUNCTIONAL STUB (sources.json `stubs`): replace a submodule's
@@ -2239,28 +2539,45 @@ class _ModuleMixin:
         to `@mul`. Only modules explicitly listed in `stubs` are stubbed; nothing is auto-subbed."""
         loc = self._loc(inst)
         name = inst.name
-        out_nets: list[str] = []
+        ports = []
         for c in inst.portConnections:
             if _enum_name(getattr(c.port, "kind", "")) == "InterfacePort":
                 flagged.append((loc, f"stub {mod} {name}: interface ports not supported in a stub"))
                 continue
             if c.expression is None:      # unconnected port -> no bridge
                 continue
-            formal = c.port.name
-            direction = _enum_name(c.port.direction)
-            # register the stub's port signal with its declared width so stage-2 analysis gives it
-            # the right (word/bit) shape -- the submodule body is NOT translated, so nothing else
-            # declares these signals.  A 1-bit port stays bit; a wider port is a word.
             ptype = getattr(c.port, "type", None)
-            pw = getattr(ptype, "bitWidth", 1) or 1
+            ports.append((c.port.name, _enum_name(c.port.direction), c.expression, ptype,
+                          getattr(ptype, "bitWidth", 1) or 1))
+        if mod in self._blackboxes and "outputs" in self._blackboxes[mod]:
+            declared = set(self._blackboxes[mod]["outputs"])
+            real = {nm for nm, d, *_ in ports if d == "Out"}
+            if declared != real:
+                flagged.append((loc, f"black box {mod} {name}: sources.json lists outputs "
+                                     f"{sorted(declared)} but the definition's outputs are {sorted(real)}"))
+                return
+        self._bridge_modelled_ports(name, mod, ports, comb, cells, signals, flagged, loc)
+
+    def _bridge_modelled_ports(self, name: str, mod: str, ports: list, comb, cells, signals,
+                               flagged, loc) -> None:
+        """Bridge every port of a MODELLED instance (stub or black box) to `inst(port)` and emit
+        its rules: the stub's text, or the black box's generated declaration.
+        `ports`: (formal, "In"/"Out"/other, actual expression, port type or None, width)."""
+        out_nets: list[str] = []
+        outs: list[tuple[str, int]] = []
+        for formal, direction, actual, ptype, pw in ports:
+            # register the port signal with its declared width so stage-2 analysis gives it the
+            # right (word/bit) shape -- the submodule body is NOT translated, so nothing else
+            # declares these signals.  A 1-bit port stays bit; a wider port is a word.
             sig_name = f"{name}({formal})"
             signals[sig_name] = Signal(name=sig_name, irtype=IRType(self._kind(ptype) if ptype else Kind.BIT, pw),
                                        is_reg=False, is_port=False, direction=None, initial=None, loc=loc)
             if direction == "In":         # inst(formal) <- parent actual (may be slice/concat/expr)
                 comb.append(CombItem(lhs=f"{name}({formal})",
-                                     rhs=self._lower_expr(c.expression), loc=loc))
+                                     rhs=self._lower_expr(actual), loc=loc))
             elif direction == "Out":      # parent actual <- inst(formal)
-                e = c.expression
+                outs.append((formal, pw))
+                e = actual
                 if _enum_name(e.kind) == "Assignment":
                     e = e.left
                 if _enum_name(e.kind) == "NamedValue":
@@ -2296,11 +2613,15 @@ class _ModuleMixin:
                                              "unsupported (expected net, part-select, or concat)"))
             else:
                 flagged.append((loc, f"stub {mod} {name}: inout/ref port {formal} not supported"))
-        # emit the stub text with @INST@ -> the instance name (so @INST@(port) == name(port))
+        # emit the stub text with @INST@ -> the instance name (so @INST@(port) == name(port)),
+        # or the black box's generated declaration
         self._stubs_used.add(mod)          # for the declared-but-never-bound check
-        stub_text = self._stubs[mod].replace("@INST@", name)
-        self._stub_rules.append(f"% functional stub: {mod} {name} ({self._current_module})")
-        self._stub_rules.append(stub_text.rstrip())
+        if mod in self._blackboxes:
+            self._stub_rules.append(self._blackbox_text(mod, name, outs))
+        else:
+            stub_text = self._stubs[mod].replace("@INST@", name)
+            self._stub_rules.append(f"% functional stub: {mod} {name} ({self._current_module})")
+            self._stub_rules.append(stub_text.rstrip())
         cells.append(CellInfo(inst=name, cell_type=mod.lower(),
                               outs=tuple(out_nets), parent=self._current_module))
 
@@ -2382,7 +2703,7 @@ class _ModuleMixin:
         if defn is not None and _enum_name(getattr(defn, "definitionKind", None)) == "Interface":
             self._register_interface(inst, signals)   # a bundle of shared wires, qualified inst(sig)
             return
-        if mod in self._stubs:   # project-local FUNCTIONAL STUB: model the block, don't translate its body
+        if self._is_modelled(mod):   # a FUNCTIONAL STUB or a BLACK BOX: model the block, never its body
             self._lower_stubbed_instance(inst, mod, comb, cells, signals, flagged)
             return
         spec = primitives.lookup(mod)
@@ -2408,6 +2729,7 @@ class _ModuleMixin:
             cells.append(CellInfo(inst=inst.name, cell_type=mod.lower(),
                                   outs=tuple(outs), parent=self._current_module))
         conns = {c.port.name: c for c in inst.portConnections}
+        self._check_prim_pins(spec, mod, inst.name, [n for n, c in conns.items() if c.expression is not None])
         params = {p.name: self._cv_int(p.value) for p in inst.body
                   if _enum_name(p.kind) == "Parameter"}
 
@@ -2572,6 +2894,20 @@ class _ModuleMixin:
             add_cell(actual_name(spec.pins["q"]))
             return
         if spec.category == "flop":
+            _qc = conns.get(spec.pins["q"])
+            _qe = _qc.expression if _qc is not None else None
+            if _qe is not None and _enum_name(_qe.kind) == "Assignment":   # an OUTPUT actual is wrapped
+                _qe = _qe.left
+            _qe = self._peel(_qe) if _qe is not None else None
+            _gs = self._genvar_select_dims(_qe) if (self._genvars and _qe is not None) else None
+            if _gs is not None:
+                # a flop primitive INSIDE a generate with per-iteration pins: a lane register
+                _pin_expr = {pn: c.expression for pn, c in conns.items() if c.expression is not None}
+                _pin_w = {pn: self._port_width(c) for pn, c in conns.items() if c.expression is not None}
+                self._lower_lane_flop(inst, spec, mod, _gs, _pin_expr, _pin_w,
+                                      lambda pin, role="input": actual_name(pin, "input" if role == "input" else "strict"),
+                                      loc, seq, reg_names, add_cell)
+                return
             q = actual_name(spec.pins["q"])
             clk = actual_name(spec.pins["clk"])
             d = actual_expr(spec.pins["d"])

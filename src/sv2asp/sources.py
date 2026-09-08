@@ -50,6 +50,7 @@ class SourcesConfig:
     horizon: int | None = None
     primary_clock: str | None = None        # the design's free-running master clock (multi-clock master-tick)
     stubs: dict[str, str] = field(default_factory=dict)  # module name -> functional-stub .lp TEXT
+    blackbox: dict[str, dict] = field(default_factory=dict)  # module name -> {"outputs": [...]} (may be {})
     #: permit level-sensitive latch cells (LATA/LATB). OFF by default -- a latch is a
     #: combinational path while enabled, not a register, and is usually instantiated by
     #: mistake. Never enables latch INFERENCE, which stays refused outright.
@@ -115,7 +116,8 @@ def _resolve(entries: list[dict], base: str) -> list[str]:
 #: refused rather than ignored -- see `_check_manifest_keys`.
 MANIFEST_KEYS = frozenset({
     "sources", "package_files", "param_files", "incdirs", "defines", "params",
-    "top", "style", "horizon", "primary_clock", "stubs", "allow_latches", "x_init", "clock_hierarchy",
+    "top", "style", "horizon", "primary_clock", "stubs", "blackbox", "allow_latches", "x_init",
+    "clock_hierarchy",
 })
 
 
@@ -170,6 +172,26 @@ def load(path: str) -> SourcesConfig:
             raise FileNotFoundError(f"stub file not found for module {mod!r}: {spath}")
         with open(spath) as sf:
             stubs[str(mod)] = sf.read()
+    # black boxes: a module NOT translated, every output UNCONSTRAINED at every instant. Either a
+    # list of module names (the definition must be in scope for the port list) or an object
+    # {module: {"outputs": [port, ...]}} -- the outputs are REQUIRED when no definition is in
+    # scope (the megacell wrapper case: nothing but the instance's connections is known).
+    bb_raw = data.get("blackbox", {})
+    blackbox: dict[str, dict] = {}
+    if isinstance(bb_raw, list):
+        for mod in bb_raw:
+            blackbox[str(mod)] = {}
+    elif isinstance(bb_raw, dict):
+        for mod, spec in bb_raw.items():
+            spec = spec or {}
+            if not isinstance(spec, dict) or set(spec) - {"outputs"}:
+                raise ValueError(f"{path}: blackbox[{mod!r}] must be {{}} or {{\"outputs\": [..]}}")
+            blackbox[str(mod)] = {"outputs": [str(o) for o in spec.get("outputs", [])]} if "outputs" in spec else {}
+    else:
+        raise ValueError(f"{path}: 'blackbox' must be a list of module names or an object")
+    for mod in blackbox:
+        if mod in stubs:
+            raise ValueError(f"{path}: module {mod!r} is both a stub and a black box")
     return SourcesConfig(
         files=tuple(files),
         package_files=tuple(_resolve(data.get("package_files", []), base)),
@@ -182,6 +204,7 @@ def load(path: str) -> SourcesConfig:
         horizon=data.get("horizon"),
         primary_clock=data.get("primary_clock"),
         stubs=stubs,
+        blackbox=blackbox,
         allow_latches=bool(data.get("allow_latches", False)),
         x_init=bool(data.get("x_init", True)),
         clock_hierarchy={str(k): dict(v) for k, v in data.get("clock_hierarchy", {}).items()},

@@ -231,8 +231,10 @@ def _main(argv: list[str] | None = None) -> int:
 
     defn_files = list(cfg.defn_files) if cfg else []
     stubs = dict(cfg.stubs) if cfg else {}
+    blackboxes = dict(cfg.blackbox) if cfg else {}
 
-    fe = PyslangFrontend(param_overrides=params, top=top, incdirs=incdirs, defines=defines, stubs=stubs)
+    fe = PyslangFrontend(param_overrides=params, top=top, incdirs=incdirs, defines=defines, stubs=stubs,
+                         blackboxes=blackboxes)
     fe._allow_latches = _latches_enabled(args.allow_latches,
                                          cfg.allow_latches if cfg else None)
     # exact-X companion: manifest "x_init": false OR --no-x-init disables (design-intrinsic
@@ -589,6 +591,14 @@ def _main(argv: list[str] | None = None) -> int:
         forced = tuple((loc.file, loc.line, reason) for loc, reason in _mapped)
         coverage = cov.compute(result.source_files, result.spans, forced, result.live_lines)
         sys.stderr.write(tag + coverage.report() + "\n")
+        if args.coverage:
+            # the LINE report: every source line with its status -- what the stderr summary
+            # elides. The flag was parsed and never read until 2026-09-08 (the sixth field
+            # report asked for this file to explain header lines tagged in its output).
+            with open(args.coverage, "w") as cf:
+                cf.write(coverage.report() + "\n\n")
+                for ls in coverage.lines:
+                    cf.write(f"{ls.status:<12} {ls.file.split('/')[-1]}:{ls.line}  {ls.text}\n")
         # WARNINGS: a faithful translation whose RESULT the reader must know about (e.g. a
         # selector its arms do not cover -> the output is unbound there). Not coverage
         # problems -- nothing was dropped -- but loud, and promotable to an error for shops

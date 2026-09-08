@@ -61,6 +61,21 @@ def _is_bitwise_compound(x) -> bool:
     return ((isinstance(x, BinOp) and x.op in ("and", "or", "xor"))
             or (isinstance(x, UnOp) and x.op == "not"))
 
+
+def _max_laneidx_pos(e) -> int:
+    """The largest `LaneIdx` position an expression mentions (-1 if none)."""
+    if isinstance(e, LaneIdx):
+        return e.pos
+    best = -1
+    for a in ("left", "right", "operand", "base", "sel", "a", "b", "index"):
+        x = getattr(e, a, None)
+        if x is not None and not isinstance(x, (int, str)):
+            best = max(best, _max_laneidx_pos(x))
+    for a in ("parts", "more", "addrs"):
+        for x in getattr(e, a, ()) or ():
+            best = max(best, _max_laneidx_pos(x[0] if isinstance(x, tuple) else x))
+    return best
+
 class _NotAffineRead(Exception):
     """The window read must fold, not lower symbolically."""
 
@@ -223,7 +238,12 @@ class _ExprMixin:
             sub = getattr(e, attr, None)
             if sub is not None:
                 if isinstance(sub, list):
-                    if any(self._expr_uses_genvar(s) for s in sub):
+                    # a ConditionalOp's `conditions` are WRAPPERS (pyslang's Condition, the
+                    # expression under `.expr`), so a genvar in a ternary's test -- `(i != 0) ?
+                    # a : b` -- was never seen: the lane write was taken for a broadcast WORD
+                    # and the lane index leaked into a word rule, unsafe (the sixth field
+                    # report's `1 != 0` rules, 2026-09-08)
+                    if any(self._expr_uses_genvar(getattr(s, "expr", s)) for s in sub):
                         return True
                 elif self._expr_uses_genvar(sub):
                     return True
@@ -762,6 +782,29 @@ class _ExprMixin:
             return
         if not (_has_lane_index(expr) or _has_implicit_lane_ref(expr, self._lane_dims)):
             return
+        # AS MANY lane dimensions as the expression mentions: in a NESTED generate a temp reading
+        # `x[i][2*j +: 2]` is a lane over (I, J), and registered over I alone its rule left J
+        # unbound -- unsafe, refused (the sixth field report's hoisted arms, 2026-09-08). The
+        # extents come from the loop nest; a partial or strided outer loop is refused by name.
+        dims = max(1, _max_laneidx_pos(expr) + 1)
+        if dims > 1:
+            rng = {v: r for v, r in self._loop_lane_stack}
+            exts = []
+            for k in range(dims):
+                r = rng.get(self._genvar_order[k]) if k < len(self._genvar_order) else None
+                if r is None or r[1] is None or r[0] != 0 or (r[2] or 1) != 1:
+                    raise NotImplementedError(
+                        f"a temporary hoisted inside a nested generate reads lanes over "
+                        f"{dims} loop indices, and loop {k} is partial or strided (deferred)")
+                exts.append(r[1])
+            self._temp_pdims[name] = tuple(exts)
+            self._lane_dims[name] = max(self._lane_dims.get(name, 0), dims)
+            self._note_lane_elem_w(name, width)
+            ext = 1
+            for n_ in exts:
+                ext *= n_
+            self._gen_locals[name] = max(self._gen_locals.get(name, 0), ext)
+            return
         self._lane_dims[name] = max(self._lane_dims.get(name, 0), 1)
         self._note_lane_elem_w(name, width)
         self._gen_locals[name] = max(self._gen_locals.get(name, 0), self._lane_hi)
@@ -1206,6 +1249,12 @@ class _ExprMixin:
                 and not (subst and peeled.symbol.name in subst)):
             nm = peeled.symbol.name
             if nm in self._genvar_order:
+                # a loop of ONE iteration: the genvar IS that constant (D1 allows the fold). As a
+                # lane index it leaked into rules whose head had been folded to a word --
+                # `val(y, V, T) :- I != 0, ..`, unsafe (the sixth field report, 2026-09-08).
+                for _v, _r in reversed(self._loop_lane_stack):
+                    if _v == nm and _r is not None and _r[1] is not None and _r[1] - _r[0] <= (_r[2] or 1):
+                        return Const(_r[0], 32)
                 return LaneIdx(self._genvar_order.index(nm))
         cv = self._const_of(e)
         # Likewise a COMPOUND subtree mentioning a genvar (`i + 1`, `i * 8`) must stay
@@ -1522,6 +1571,16 @@ class _ExprMixin:
                     self._lane_dims[name] = max(self._lane_dims.get(name, 0), 1)
                     self._note_lane_elem_w(name, ew)
                     return ElemSel(name, idx)
+                _ew_e = getattr(getattr(e, "type", None), "bitWidth", 1) or 1
+                if (self._lane_dims.get(name, 0) >= 2 and _ew_e > 1
+                        and self._lane_elem_w.get(name) == 1 and name not in self._gen_locals
+                        and len(self._packed_dims(base.symbol.type)) == self._lane_dims[name]):
+                    # a ROW read of a net laned PER BIT (written `x[b][y]` in a nested generate,
+                    # or a lifted row flop): the row assembled from its bits -- W lane reads, a
+                    # bounded join -- never a second, coarser lane view of the same net (the
+                    # sixth report's §5, 2026-09-08)
+                    return Concat(tuple((ElemSel(name, idx, more=(Const(j, 32),)), 1)
+                                        for j in range(_ew_e - 1, -1, -1)))
                 if name in self._lane_dims and name not in self._gen_locals:
                     # a genuine lane/INDEXED signal -> per-lane read. NOT a generate-LOCAL: its
                     # lane axis is the ITERATION, so an index on it (`bi[2]` with `logic [2:0]

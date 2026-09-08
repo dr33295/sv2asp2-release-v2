@@ -4688,7 +4688,9 @@ def _spec_rules(design: Design, spec: str, *, bitvec: bool = False) -> tuple[lis
         # Stub rules use val(inst_sig(port), V, T) — a functor as the first arg.
         # In modular mode these must become val(Inst, inst_sig(port), V, T) with isa(Inst,spec).
         # Each element of design.stub_rules may be a multi-line string; process rule-by-rule.
-        _stub_val = re.compile(r'\bval\(([a-z][a-z0-9_]*\([^)]*\))')
+        # `val(..)` and, since the black box (2026-09-08), `dontcare_at(..)`: a stub's declared
+        # unconstrained output is per instance like every other per-instance head.
+        _stub_val = re.compile(r'\b(val|dontcare_at)\(([a-z][a-z0-9_]*\([^)]*\))')
         def _promote_stub_block(block: str) -> str:
             """Promote all rules in a (possibly multi-line) stub block to 4-arg modular form."""
             out_lines: list[str] = []
@@ -4702,15 +4704,15 @@ def _spec_rules(design: Design, spec: str, *, bitvec: bool = False) -> tuple[lis
                 # Only the HEAD before :- gets its val promoted; body gets val promoted + isa prepended.
                 if ":-" in ln:
                     head, _, body = ln.partition(":-")
-                    head_new = _stub_val.sub(lambda m: f"val(Inst, {m.group(1)}", head)
-                    body_new = _stub_val.sub(lambda m: f"val(Inst, {m.group(1)}", body)
+                    head_new = _stub_val.sub(lambda m: f"{m.group(1)}(Inst, {m.group(2)}", head)
+                    body_new = _stub_val.sub(lambda m: f"{m.group(1)}(Inst, {m.group(2)}", body)
                     body_new = body_new.lstrip()
                     if not body_new.startswith(f"isa(Inst, {spec})"):
                         body_new = f"isa(Inst, {spec}), {body_new}"
                     out_lines.append(f"{head_new}:-{body_new}")
                 else:
                     # Continuation line (no :-): only promote val( body literals.
-                    out_lines.append(_stub_val.sub(lambda m: f"val(Inst, {m.group(1)}", ln))
+                    out_lines.append(_stub_val.sub(lambda m: f"{m.group(1)}(Inst, {m.group(2)}", ln))
             return "\n".join(out_lines)
         for stub_block in design.stub_rules:
             rules.append(_promote_stub_block(stub_block))
@@ -5524,7 +5526,7 @@ def _xinit_header(top: str, modular: bool) -> list[str]:
     ]
 
 
-def dontcare_lines(design: Design, text: str) -> list[str]:
+def dontcare_lines(design: Design, text: str, inst: str | None = None) -> list[str]:
     """The boundary choices for every `x`-valued assignment the design DECLARED.
 
     The design layer emits `dontcare_at(Sig, T) :- <the arm's guards>.` -- a value-free statement of
@@ -5541,11 +5543,16 @@ def dontcare_lines(design: Design, text: str) -> list[str]:
     sigs: list[str] = []
     for ln in text.splitlines():
         if ln.startswith("dontcare_at("):
-            nm = ln[len("dontcare_at("):].split(",", 1)[0].strip()
+            args = ln[len("dontcare_at("):].split(",")
+            # flat `dontcare_at(y, T)`; modular `dontcare_at(Inst, y, T)` (the sink lifts it)
+            nm = (args[1] if len(args) >= 3 and args[0].strip() == "Inst" else args[0]).strip()
             if nm not in sigs:
                 sigs.append(nm)
     if not sigs:
         return []
+    # modular: the choice is per INSTANCE PATH, like every other companion atom
+    v = (lambda nm: f"val({inst}, {nm}, V, T)") if inst else (lambda nm: f"val({nm}, V, T)")
+    at = (lambda nm: f"dontcare_at({inst}, {nm}, T)") if inst else (lambda nm: f"dontcare_at({nm}, T)")
     width = {sg.name: sg.irtype.width for sg in design.signals}
     enum_of = {sg.name: sg.enum_type for sg in design.signals if sg.enum_type}
     members = {en.name: [lab for lab, _v in en.members] for en in design.enums}
@@ -5556,18 +5563,18 @@ def dontcare_lines(design: Design, text: str) -> list[str]:
         base = nm.split("(", 1)[0]
         if base in enum_of and enum_of[base] in members:
             pool = "; ".join(members[enum_of[base]])
-            out.append(f"{{ val({nm}, V, T) : V = ({pool}) }} = 1 :- dontcare_at({nm}, T).   "
+            out.append(f"{{ {v(nm)} : V = ({pool}) }} = 1 :- {at(nm)}.   "
                        f"% unconstrained: any MEMBER of {enum_of[base]}")
             continue
-        w = width.get(base)
+        w = width.get(nm, width.get(base))       # a stub/black-box port is registered as `inst(port)`
         if w is None:
             continue
         if w > XINIT_CAP:
-            out.append(f"% {nm} is unconstrained where `dontcare_at({nm}, T)` holds, but {w} bits is "
+            out.append(f"% {nm} is unconstrained where `{at(nm)}` holds, but {w} bits is "
                        f"{2 ** 20}+ values -- enumerating it would not ground. Constrain it in the "
                        f"scenario, or read the datapath symbolically.")
             continue
-        out.append(f"{{ val({nm}, V, T) : V = 0..{2 ** w - 1} }} = 1 :- dontcare_at({nm}, T).   "
+        out.append(f"{{ {v(nm)} : V = 0..{2 ** w - 1} }} = 1 :- {at(nm)}.   "
                    f"% unconstrained: any {w}-bit value")
     return out
 
@@ -5587,8 +5594,9 @@ def xinit_modular(modular: dict, bitvec: bool = True, files: dict | None = None)
     specs, tree = modular["specs"], modular["tree"]
     body: list[str] = []
     for n in tree:
-        body += _xinit_lines(specs[n["spec"]], n["path"], bitvec,
-                             (files or {}).get(f"{n['spec']}.lp", ""))
+        _t = (files or {}).get(f"{n['spec']}.lp", "")
+        body += _xinit_lines(specs[n["spec"]], n["path"], bitvec, _t)
+        body += dontcare_lines(specs[n["spec"]], _t, n["path"])   # assigned-x choices, per instance
     if not body:
         return None
     return "\n".join(_xinit_header(modular["top"], True) + body) + "\n"

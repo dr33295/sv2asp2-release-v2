@@ -49,13 +49,15 @@ class PyslangFrontend(_TypesMixin, _ExprMixin, _StmtMixin, _ModuleMixin):
     def __init__(self, param_overrides: dict[str, int] | None = None,
                  top: str | None = None, incdirs: list[str] | None = None,
                  defines: dict[str, str] | None = None,
-                 stubs: dict[str, str] | None = None) -> None:
+                 stubs: dict[str, str] | None = None,
+                 blackboxes: dict[str, dict] | None = None) -> None:
         self._overrides = param_overrides or {}
         self._top = top
         self._modular = False                  # modular mode: record child user-submodule instances
         self._incdirs = incdirs or []
         self._defines = defines or {}
         self._stubs = stubs or {}              # module name -> functional-stub .lp TEXT (project-local)
+        self._blackboxes = blackboxes or {}    # module name -> {"outputs": [...]} or {} (sources.json `blackbox`)
         self._src_cache: dict[str, list[str]] = {}
         self._genvars: set[str] = set()       # genvar names in scope (inside a generate nest)
         #: The SAME genvars in NEST ORDER (outer first). A genvar used as a VALUE lowers to the
@@ -83,6 +85,7 @@ class PyslangFrontend(_TypesMixin, _ExprMixin, _StmtMixin, _ModuleMixin):
         self._lane_dims: dict[str, int] = {}  # sig accessed as sig[gv]...[gv] -> # of lane indices
         self._lane_fields: dict = {}          # base -> fields of its lane word (affine positions), per module
         self._gen_locals: dict[str, int] = {}  # a net/variable DECLARED inside a for-generate -> the loop's extent (per module)
+        self._temp_pdims: dict[str, tuple] = {}  # a temp hoisted in a NESTED generate -> its per-dimension extents (per module)
         self._lane_elem_w: dict[str, int] = {}   # lane sig -> per-lane element bit width (1 = bit-vector)
         self._lane_domains: dict[str, tuple] = {}  # array-instance lane owner -> per-dim lane counts (ni[,nj])
         self._param_names_seen: set[str] = set()   # every parameter name elaboration
@@ -307,7 +310,7 @@ class PyslangFrontend(_TypesMixin, _ExprMixin, _StmtMixin, _ModuleMixin):
                     continue
                 if primitives.lookup(m.definition.name) is not None:
                     continue
-                if m.definition.name in self._stubs:
+                if self._is_modelled(m.definition.name):
                     continue
                 if getattr(m, "body", None) is None:
                     continue
@@ -509,8 +512,8 @@ class PyslangFrontend(_TypesMixin, _ExprMixin, _StmtMixin, _ModuleMixin):
                     continue
                 if primitives.lookup(m.definition.name) is not None:
                     continue                           # primitive -> inlined in this spec, not a node
-                if m.definition.name in self._stubs:
-                    continue                           # stubbed module -> flat-only, no modular child spec
+                if self._is_modelled(m.definition.name):
+                    continue                           # stubbed / black-boxed module -> no modular child spec
                 if getattr(m, "body", None) is None:
                     continue
                 child_path = cid(m.name) if path == topname else f"{path}({cid(m.name)})"
