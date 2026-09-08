@@ -1601,6 +1601,19 @@ class _ExprMixin:
                 if os_ is not None and gvi is not None:
                     name, off = os_
                     ew = getattr(getattr(e, "type", None), "bitWidth", 1) or 1
+                    _inner = self._peel(base.value)
+                    _pd = self._packed_dims(_inner.symbol.type) if hasattr(_inner, "symbol") else ()
+                    _bank = self._const_of(self._peel(base.selector))
+                    if (ew > 1 and len(_pd) == 3 and self._lane_dims.get(name, 0) == 3
+                            and self._lane_elem_w.get(name) == 1 and _bank is not None
+                            and _pd[2] == ew):
+                        # a ROW of a net laned PER BIT over three indices (`cpm[b][i][w] = ..` in a
+                        # nested generate), selected by a constant bank and the genvar: the row
+                        # assembled from its bits `cpm(1, I, j)` -- never a second, six-bit lane
+                        # view, which is the "1 bit(s) and 6 bit(s)" conflict a field report hit on
+                        # `|x[1][i][1:0]` (2026-09-08; the F69 rule, one dimension deeper)
+                        return Concat(tuple((ElemSel(name, Const(_bank, 32), more=(gvi, Const(j, 32))), 1)
+                                            for j in range(ew - 1, -1, -1)))
                     self._lane_dims[name] = max(self._lane_dims.get(name, 0), 1)
                     self._note_lane_elem_w(name, ew)
                     if off == 0:
