@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from .frontend.base import Span
 
 _CAT_FROM_SPAN = {"design": "emitted", "decl": "decl", "header": "decl",
-                  "property": "property", "unknown": "unsupported"}
+                  "property": "property", "structural": "structural", "unknown": "unsupported"}
 # priority when several spans overlap a line (more specific wins)
 _PRIORITY = {"emitted": 5, "unsupported": 4, "property": 3, "decl": 2}
 # the two categories that represent a genuine gap
@@ -87,17 +87,25 @@ def compute(source_files: tuple[str, ...], spans: tuple[Span, ...],
             live_lines: dict[str, frozenset[int]] | None = None) -> Coverage:
     # Key by realpath: pyslang may report cwd-relative names even for absolute input.
     by_file: dict[str, dict[int, str]] = {}
+    kind_reasons: dict[tuple[str, int], str] = {}
     for sp in spans:
         cat = _CAT_FROM_SPAN.get(sp.category, "unsupported")
         d = by_file.setdefault(os.path.realpath(sp.file), {})
         for ln in range(sp.start, sp.end + 1):
             if _PRIORITY.get(cat, 0) >= _PRIORITY.get(d.get(ln, ""), 0):
                 d[ln] = cat
+            if cat == "unsupported":
+                # a member of a kind the classifier does not name: SAY SO. A bare tag with no
+                # reason sent a field reporter looking for a refusal that did not exist
+                # (the eighth report, 2026-09-08)
+                kind_reasons[(os.path.realpath(sp.file), ln)] = (
+                    f"coverage: member kind {sp.kind} is not classified -- a construct outside "
+                    f"the translated subset (report it with the member's text)")
 
     # forced problems: a construct the frontend FLAGGED or the emitter could not translate.
     # These OVERRIDE the span category (a flagged `assign` line otherwise reads as `emitted`),
     # so a partial/failed translation can never report OK -- the auditability guarantee.
-    reasons: dict[tuple[str, int], str] = {}
+    reasons: dict[tuple[str, int], str] = dict(kind_reasons)
     for file, line, reason in forced_problems:
         by_file.setdefault(os.path.realpath(file), {})[line] = "unsupported"
         reasons[(os.path.realpath(file), line)] = reason

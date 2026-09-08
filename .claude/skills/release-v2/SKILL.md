@@ -51,8 +51,9 @@ a real block through its manifest, and three manifest keys decide what a real tr
   one answer set per value, so a property over its consumers holds for every value the box
   could produce. Pin an output in the scenario (`val(<inst>(<port>), V, T)`) to model it cycle
   by cycle; an output wider than 20 bits is not enumerated and MUST be pinned. A declared box
-  that never binds is loud, like a stub. Use a stub when the behaviour matters to the claim, a
-  black box when any behaviour must do.
+  that never binds is loud, like a stub. Which of the two a block gets is YOUR choice, made in
+  the manifest: the tool never picks one, and a module with no definition in scope stays a
+  loud refusal until you do.
 
 Read the run's `coverage:` line as the verdict: a PROBLEM line names a construct the tool did
 not lower, and the program must not be used (`--allow-problems` only to look). `--coverage

@@ -27,7 +27,15 @@ _DECL_KINDS = {"PortDeclaration", "DataDeclaration", "NetDeclaration", "Paramete
                "ModportDeclaration"}  # an interface modport: a directional view, consumed structurally
 # SVA / verification = the property layer (recognized + handled separately, NOT an omission)
 _PROPERTY_KINDS = {"PropertyDeclaration", "SequenceDeclaration", "ConcurrentAssertionMember",
-                   "ImmediateAssertionMember"}
+                   "ImmediateAssertionMember",
+                   # the rest of the verification layer (2026-09-08, the eighth field report: DV
+                   # assertion macros inside an `ifdef expanded to kinds none of these lists
+                   # named, and the coverage map tagged them with no reason)
+                   "CheckerInstantiation", "CheckerDeclaration", "CovergroupDeclaration",
+                   "BindDirective", "ClockingDeclaration", "DefaultClockingReference",
+                   "LetDeclaration", "DefaultDisableDeclaration"}
+# members that are nothing at all (a stray `;`) -- structural, never a gap
+_STRUCTURAL_KINDS = {"EmptyMember"}
 
 # pyslang BinaryOperator name -> catalog op name
 _BINOP = {

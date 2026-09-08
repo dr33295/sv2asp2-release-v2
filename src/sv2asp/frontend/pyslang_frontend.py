@@ -23,7 +23,7 @@ for _name, _submod in (
 from .. import primitives
 from ..ir.nodes import Clock as _IrClock, DerivedClock as _IrDerivedClock, Loc
 from .base import FrontendResult, Span
-from ._common import _DECL_KINDS, _DESIGN_KINDS, _PROPERTY_KINDS, _enum_name
+from ._common import _DECL_KINDS, _DESIGN_KINDS, _PROPERTY_KINDS, _STRUCTURAL_KINDS, _enum_name
 
 
 from ._exprs import _ExprMixin
@@ -601,6 +601,7 @@ class PyslangFrontend(_TypesMixin, _ExprMixin, _StmtMixin, _ModuleMixin):
                 cat = ("design" if kind in _DESIGN_KINDS
                        else "decl" if kind in _DECL_KINDS
                        else "property" if kind in _PROPERTY_KINDS
+                       else "structural" if kind in _STRUCTURAL_KINDS
                        else "unknown")
                 spans.append(Span(mfile, l0, l1, cat, kind))
         return spans
