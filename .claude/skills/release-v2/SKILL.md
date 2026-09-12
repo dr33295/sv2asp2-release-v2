@@ -68,6 +68,115 @@ a wide word's cost, not a defect. Report a gap with `--report issue.txt` plus th
 file and a minimised probe under generic names; the maintainer reconstructs from those and
 never needs the design.
 
+**The `coverage:` line and the EXIT STATUS answer different questions, and reading one for the
+other wastes time.** Coverage asks whether every construct lowered. The exit status also covers
+unsafe rules, dark reads and state with no power-on policy, so `coverage: OK (no design
+omissions)` with a non-zero exit is a normal and meaningful combination: nothing was dropped,
+and something else still has to be resolved before the program is used.
+
+**Verify a stub or a black box against the OUTPUT, not against the summary.** A stub that bound
+leaves a marked section and rules over the instance's ports; a black box leaves
+`blackbox(<inst>(<port>), <width>)` with a `dontcare_at`. One field report (2026-09-11) had a
+stub correctly applied and reported as `never bound` — a global question answered from a
+per-module moment, order-dependent on two instance lines, since fixed — and the way to settle
+that class of doubt in ten seconds is to grep the emitted file:
+
+    rg -n "FUNCTIONAL STUBS|functional stub: <module>|blackbox\(" out/translation.lp
+
+### How to run it, end to end
+
+`setup.sh` installs two commands into this folder's `.venv`: **`sv2asp`** is the translator
+(RTL to ASP, the subject of this section) and **`sv2asp2`** is the route's own CLI (compile,
+certificate, print, round trip, ladder). Activate the environment once, or call the binaries by
+path from your own working folder; never work inside the tools folder.
+
+    . /path/to/tools/.venv/bin/activate     # or prefix each command with /path/to/tools/.venv/bin/
+
+**A working folder for one block** looks like this. Everything here is yours; nothing is written
+into the tools folder.
+
+    myBlock/
+      sources.json                  the manifest: what to compile, and what to replace
+      sv2asp.toml                   machine paths and any primitive plugins
+      rtl/myBlock.sv                the design
+      rtl/pkg_myBlock.sv            packages and parameter files
+      models/sramCell_decl.sv        an interface-only module for a cell with no body
+      models/sramCell.lp             the functional model that replaces it
+      out/                          the translation and its companions
+      report/                       the three diagnostics
+
+**The manifest.** The stub map is keyed by MODULE NAME and is case-sensitive, which is the most
+common way a stub silently fails to apply:
+
+    {
+      "sources":       [ { "path": "rtl/myBlock.sv", "type": "file" } ],
+      "package_files": [ "rtl/pkg_myBlock.sv", "models/sramCell_decl.sv" ],
+      "top":           "myBlock",
+      "stubs":         { "sramCell": "models/sramCell.lp" }
+    }
+
+The declaration file goes in `package_files`: it supplies the port directions and widths so the
+instance elaborates, while the `.lp` supplies the behaviour. A module with no definition at all
+in scope is a loud refusal, not an implicit black box.
+
+**The run.** Translation only; it starts no solver and proves nothing.
+
+    mkdir -p out report
+    sv2asp --sources sources.json --config sv2asp.toml --mode emit \
+        -o out/translation.lp \
+        --report report/issue.txt --coverage report/coverage.txt --log report/translation.log
+
+`--mode modular` writes a file SET instead, so `-o` must then be a FOLDER (`-o out/`); a
+single-file `-o` is refused. Run both modes when you care about the answer: they are two
+emitters, and a construct has been known to lower in one and not the other.
+
+**What it writes.** Beside the design, three companions and three diagnostics:
+
+    out/translation.lp            the design: the transition relation, nothing else
+    out/translation__t34.lp       the single-value/foundedness companion
+    out/translation__state.lp     the state vector, as a declared interface
+    out/translation__xinit.lp     the power-on layer (symbolic by default)
+    report/translation.log        the stable verdict and the findings, grouped -- READ THIS
+    report/issue.txt             the raw report -- SEND THIS if you report a gap
+    report/coverage.txt          the per-line map, which settles a single disputed line
+
+**Then check three things, in this order.**
+
+    grep "^coverage:" report/translation.log         # did every construct lower?
+    echo $?                                          # ...and is the program safe to reason over?
+    rg -n "FUNCTIONAL STUBS|functional stub: sramCell|blackbox\(" out/translation.lp
+
+The first is about constructs, the second also covers unsafe rules, dark reads and state with no
+power-on policy, and the third is how you confirm what was actually sealed. A run can print
+`coverage: OK (no design omissions)` and exit non-zero, and that combination means exactly what
+it says: nothing was dropped, something else still needs resolving.
+
+**A worked shape, complete.** A design whose memory wrapper you want sealed behind a model:
+
+    // rtl/myBlock.sv
+    module myBlock (input logic clk, input logic [7:0] a, b, output logic [15:0] y);
+      logic [15:0] w;
+      sramCell u_mem (.a(a), .b(b), .p(w));
+      always_ff @(posedge clk) y <= w;
+    endmodule
+
+    // models/sramCell_decl.sv  -- ports only; the body is never read
+    module sramCell (input logic [7:0] a, input logic [7:0] b, output logic [15:0] p);
+    endmodule
+
+    % models/sramCell.lp  -- @INST@ becomes the instance name, so this binds to u_mem
+    val(@INST@(p), V, T) :- val(@INST@(a), A, T), val(@INST@(b), B, T), V = @mul(A, B, 16).
+
+That translates with the wrapper's behaviour given by one rule, and `out/translation.lp` carries
+`% functional stub: sramCell u_mem` followed by `val(u_mem(p), ...)`. To seal the same wrapper
+with NOTHING known about it instead, drop the `.lp` and write `"blackbox": { "sramCell": {} }`;
+the output then carries `blackbox(u_mem(p), 16)` and every value of `p` is possible at every
+instant. Use `{"outputs": ["p"]}` when no declaration is in scope at all.
+
+**`docs/guide/TRANSLATION_LEARNINGS.md` is the longer version of this paragraph**: every way a
+real tree has gone wrong so far, what the run looked like, and what to do. Read it before
+reporting something, and after a run whose message you do not believe.
+
 ## The ladder governs everything
 
 Every artifact is a rung: `specification, signature, dsl, contract, design, certificate, rtl`.

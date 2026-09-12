@@ -403,9 +403,18 @@ class _ModuleMixin:
             enums=tuple(enums.values()),
             cells=tuple(cells),
             packed_dims={**packed, **temp_pdims_local},   # + the extents of nested-generate temps
-            flagged=tuple([*flagged, *self._unbound_stub_problems(),
-                           *self._unapplied_override_problems(),
-                           *self._unused_intake_problems(getattr(self, "_compiled_files", []))]),
+            # THE DECLARED-BUT-NEVER-CONSUMED CHECKS ARE NOT HERE. They used to be, and they
+            # were WRONG here: each asks a question about the WHOLE RUN ("did this declared stub
+            # ever bind to any instance?") while this function runs ONCE PER MODULE, and the
+            # `_stubs_used` set it consults only fills up as instances are visited. Flattening a
+            # module recurses into this function for each child, so a child lowered BEFORE the
+            # stubbed instance answered the question with an empty set and reported a stub that
+            # was applied moments later as never bound -- a false PROBLEM, exit non-zero, on a
+            # complete and correctly sealed translation. It depended on the source order of the
+            # instances, and it was flat-only, because modular happens to lower the top first.
+            # Found from the field on a real block (2026-09-11). They are answered once, after
+            # every module is lowered: `_declaration_problems`, attached by the two entry points.
+            flagged=tuple(flagged),
             warned=tuple(getattr(self, '_warns', []) or []),
             derived_clocks=tuple(derived_local),
             stub_rules=tuple(stub_rules_local),
@@ -2360,6 +2369,22 @@ class _ModuleMixin:
                  f"Check the name against the RTL (case-sensitive) -- every width, lane count "
                  f"and spec key downstream belongs to the unconfigured design")
                 for k in missing]
+
+    def _declaration_problems(self) -> list:
+        """The three DECLARED-BUT-NEVER-CONSUMED checks, answered ONCE for the whole run.
+
+        Each compares what `sources.json` (or the CLI) DECLARED against what the compile and
+        the lowering actually consumed: a stub or black box that never bound to an instance, a
+        parameter override that matched no parameter, a define or include directory that could
+        not have had any effect. All three are questions about the run rather than about a
+        module, so the only moment they have an answer is after every module has been lowered --
+        which is why they are called from `parse_all` and `parse_modular` and not from
+        `_lower_body`, where they lived until 2026-09-11 and where the stub one was a
+        source-order-dependent false positive (see the note at that call site).
+        """
+        return [*self._unbound_stub_problems(),
+                *self._unapplied_override_problems(),
+                *self._unused_intake_problems(getattr(self, "_compiled_files", []))]
 
     def _unbound_stub_problems(self) -> list:
         """A declared stub that never bound to any instance is a LOUD problem.

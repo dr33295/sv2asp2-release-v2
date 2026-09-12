@@ -1043,3 +1043,13 @@
   gate: [test_v2_mit_bundle_carries_the_compiler_but_not_the_route_it_teaches, test_v2_user_distribution_is_safe_to_ship]
   docs: [MAINTAINER.md, CLAUDE.md licensing]
 
+- id: declared-stub-check-order-dependent
+  date: 2026-09-11
+  status: fixed
+  found: "field report: a stub declared in sources.json was APPLIED -- its rules are in the emitted file -- and the run reported it as `never bound: no instance of that module was found, so it was NOT stubbed`, exiting non-zero with the program INCOMPLETE"
+  what: "the three declared-but-never-consumed checks (an unbound stub or black box, an unapplied parameter override, an unused define or include dir) ran from the PER-MODULE lowering while each asks a question about the whole RUN; the stub one consults a set that fills as instances are visited, so flattening a child instantiated BEFORE the stubbed instance answered with an empty set"
+  why: "an order-dependent decision is wrong for the order nobody wrote (the F17 lesson, met again); and this check guards the worst-shaped defect the tool can have -- a block asked to be SEALED behind a model, translated in full instead, with coverage happy because every line really was translated -- so a false alarm on it teaches a reader to ignore the one message standing between them and a meaningless proof"
+  fix: "`_declaration_problems` answers all three ONCE, after every module is lowered; flat attaches them in parse_all to each result, modular through the existing `_modular_flags` mechanism that already carries run-level problems to the top spec. The checks themselves are unchanged"
+  gate: [test_declared_stub_check_is_not_source_order_dependent]
+  docs: [TRANSLATION_LEARNINGS.md, skill release-v2]
+

@@ -182,6 +182,16 @@ class PyslangFrontend(_TypesMixin, _ExprMixin, _StmtMixin, _ModuleMixin):
             results.append(FrontendResult(
                 design=design, source_files=(src_file,), spans=spans_by_file.get(src_file, ()),
                 live_lines={real: live_by_file.get(real, frozenset())}))
+        # EVERY module is lowered by now, so the declared-but-never-consumed questions finally
+        # have an answer. They belong to the RUN, not to a module, and `cli.py` reads them off
+        # the design it writes -- so each result carries them (a run with two top modules
+        # reports the same run-level problem in both, which is what a reader of either needs).
+        decl = self._declaration_problems()
+        if decl:
+            import dataclasses as _dc
+            results = [_dc.replace(r, design=_dc.replace(
+                r.design, flagged=tuple([*r.design.flagged, *decl])))
+                for r in results]
         return results
 
     def param_table(self, files: list[str], defn_files: list[str] | None = None) -> dict:
@@ -531,6 +541,9 @@ class PyslangFrontend(_TypesMixin, _ExprMixin, _StmtMixin, _ModuleMixin):
         # Instance-level problems found while walking the tree (e.g. an unconnected input) belong
         # to no single spec's own body, so attach them to the TOP spec -- that is what cli.py
         # scans for `--strict-coverage`, and it keeps modular in step with flat (hard rule 1).
+        # the run-level declaration checks, answered once (see `_declaration_problems`); they
+        # travel with the other problems that belong to no single module's body
+        self._modular_flags.extend(self._declaration_problems())
         if self._modular_flags and specs:
             import dataclasses as _dc
             _tk = topname if topname in specs else next(iter(specs))
