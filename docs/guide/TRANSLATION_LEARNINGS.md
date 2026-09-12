@@ -76,6 +76,29 @@ which any proof runs against the very implementation the stub was there to abstr
 false alarm on that check is not noise. It teaches a reader to ignore the one message that
 stands between them and a meaningless proof, which is why it was fixed rather than suppressed.
 
+## A stub that keeps storage must say what that storage powers on as
+
+**The finding, 2026-09-12.** A memory model written as a stub keeps its cells in `val` atoms
+across a tick. The tool recognised those cells as state and reported `STATE WITH NO POWER-ON
+POLICY` for them. That part is right: the translation carries no initial state for anything,
+so state a person introduced needs a policy from that person, or every property over it is
+vacuous at the start.
+
+**The defect.** The author's answer did not count. A rule written into the stub pinning every
+cell at instant 0 left the problem standing, because coverage was decided against the power-on
+walk's elements, and that walk enumerates the design's constructs. A stub's storage belongs to
+no construct, so nothing written anywhere could cover it. Fixed: a plain `val(..., 0)` head in
+the emitted program now determines its term, and the check accepts it.
+
+**What to write.** One rule in the stub, in the model's own vocabulary, giving the storage its
+power-on. For a memory that starts cleared:
+
+    val(@INST@(ram(A)), 0, 0) :- A = 0..DEPTH-1.
+
+Write what the memory actually powers on as, not what is convenient; zero is the usual answer
+and it is still an answer, not a default the tool would ever supply. A choice rule does not
+belong here -- that is boundary-layer material, and design-layer text stays positive.
+
 ## Stub or black box is your choice, never the tool's
 
 A stub replaces a module with a model you wrote, when you know what the block does. A black box

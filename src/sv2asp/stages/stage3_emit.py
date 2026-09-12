@@ -48,7 +48,7 @@ from ..ir.expr import (
 )
 from ..ir.nodes import CombItem, Design, Loc, SeqItem
 from ..ir.types import Shape
-from ..state_inventory import family_join, state_family, state_terms
+from ..state_inventory import family_join, state_family, state_terms, terms_determined_at_zero
 from .stage2_analysis import Analysis, analyze
 
 
@@ -5434,9 +5434,13 @@ def xinit_uncovered(design: Design, text: str, bitvec: bool = True) -> list[str]
     elems = _xinit_elements(design, bitvec, text)
     names = {e.name for e in elems}
     forms = {e.name: e.form for e in elems}
+    # state the PROGRAM ITSELF determines at instant 0 -- a stub author's own power-on for the
+    # model's storage, the one source of such a head since F4 (state_inventory says why)
+    pinned = terms_determined_at_zero(text)
+    pinned |= {state_family(p) for p in pinned}
 
     def uncovered(t: str) -> bool:
-        if t in names:
+        if t in names or t in pinned or state_family(t) in pinned:
             return False
         fam = state_family(t)
         if fam not in names:

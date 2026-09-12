@@ -86,6 +86,31 @@ def state_terms(text: str) -> set[str]:
     return out
 
 
+def terms_determined_at_zero(text: str) -> set[str]:
+    """State terms the emitted program itself DETERMINES at instant 0: the term of every plain
+    `val(...)` head whose time argument is the literal `0`.
+
+    Since F4 the design layer emits no instant-0 fact for any construct, so the only way such a
+    head reaches the program is that a person wrote it -- a functional stub's author giving the
+    model's own storage its power-on. That is exactly what the power-on check must accept as
+    coverage (2026-09-12, from the field): a stub whose storage lives in `val` atoms is
+    rightly recognised as state and rightly asked for a policy, but the walk that decides
+    coverage enumerates the DESIGN's constructs, and a stub's storage belongs to none, so the
+    author's answer was refused however it was written. A refusal with no remedy is a gap
+    wearing a message. Plain heads only: a choice rule belongs in the boundary companion, not
+    in design-layer text (hard rule 3)."""
+    out: set[str] = set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("%"):
+            continue
+        args = _head_args(line)
+        if args is None or args[-1].replace(" ", "") != "0":
+            continue
+        out.add(args[-3].strip())
+    return out
+
+
 def _val_terms_in_body(line: str) -> list[str]:
     """The SIGNAL TERM of every `val(...)` literal in one rule's body -- `q(0)`, `q(I)`, `mem(A)`,
     `cnt`; the modular form `val(Inst, term, V, T)` yields the same term. Balanced-paren scan, so

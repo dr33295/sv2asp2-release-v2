@@ -167,6 +167,10 @@ it says: nothing was dropped, something else still needs resolving.
     % models/sramCell.lp  -- @INST@ becomes the instance name, so this binds to u_mem
     val(@INST@(p), V, T) :- val(@INST@(a), A, T), val(@INST@(b), B, T), V = @mul(A, B, 16).
 
+**A stub that keeps STORAGE must also give it a power-on**, in the same file, one rule at
+instant 0 (`val(@INST@(ram(A)), 0, 0) :- A = 0..15.`): the model's cells are state the
+translation cannot initialise for you, and the run reports them until you do.
+
 That translates with the wrapper's behaviour given by one rule, and `out/translation.lp` carries
 `% functional stub: sramCell u_mem` followed by `val(u_mem(p), ...)`. To seal the same wrapper
 with NOTHING known about it instead, drop the `.lp` and write `"blackbox": { "sramCell": {} }`;

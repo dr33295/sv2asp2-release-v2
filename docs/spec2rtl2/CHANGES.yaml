@@ -1053,3 +1053,13 @@
   gate: [test_declared_stub_check_is_not_source_order_dependent]
   docs: [TRANSLATION_LEARNINGS.md, skill release-v2]
 
+- id: stub-storage-power-on-has-a-remedy
+  date: 2026-09-12
+  status: fixed
+  found: "field report: a functional memory model's cells were reported as STATE WITH NO POWER-ON POLICY -- correctly -- and a power-on rule written into the stub by its author did not resolve it"
+  what: "the power-on check decided coverage against the walk's elements, which enumerate the DESIGN's constructs; a stub's storage belongs to none, so nothing the author wrote could ever cover it"
+  why: "a refusal with no remedy is a gap wearing a message (the F18 lesson); the check exists so state introduced by a person gets a policy from that person, and it was refusing the very policy it asked for"
+  fix: "state_inventory.terms_determined_at_zero -- the term of every plain val(...) head at the literal instant 0 -- and xinit_uncovered treats such a term (or its family) as covered. Narrow by construction: since F4 the design layer emits no instant-0 head, so the only source is a person's own policy for state a person introduced. Plain heads only; a choice belongs in the companion (hard rule 3)"
+  gate: [test_stub_storage_power_on_written_by_its_author_counts]
+  docs: [TRANSLATION_LEARNINGS.md, skill release-v2]
+
