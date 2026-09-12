@@ -185,6 +185,12 @@ python -m sv2asp.aspfirst2 ladder explained <entry> <step> --note '...'
      two lowerings — the collision guard.
    - `s_eventually` is refused BY DESIGN — reduce it to a bound, a ranking, or
      work-conservation before compiling.
+   - **A delivered VALUE is an `@obligation`** (methodology 10.7): value-kind `@define`s
+     whose arms are terms in the @func vocabulary with explicit widths, and one obligation
+     naming the port, the instant and the define; it compiles to the direct route's
+     `model`/`obligation_span`/`refmodel` form and the certificate owes it to Lean. Spell the
+     arms so the printed term is the one your Lean development transcribes. Arithmetic on an
+     opaque value anywhere else is refused.
    - The header prints the claim set's **deepest temporal reference** — the K to raise
      toward when a step fails.
    - **Read the two lines it prints before the contract.** `reset <name>: <polarity> --

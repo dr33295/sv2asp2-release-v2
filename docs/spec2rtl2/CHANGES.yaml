@@ -1022,3 +1022,24 @@
   gate: []
   docs: []
 
+- id: dsl-delivered-value-obligation
+  date: 2026-09-09
+  status: fixed
+  found: "review: the 64x64 multiplier's dsl rung recorded the direct route because the language had no vocabulary for a delivered value owed to Lean; TRANSLATION.md 3.7 described the lowering and nothing implemented it"
+  what: "`@obligation NAME` with a `span N` line and `ANT |=> ##k PORT == VALUE`, and value-kind `@define NAME : value(W)` whose arms are `is TERM when COND` in the tool's @func vocabulary (sext, slc, mul, add, sub, cat, shl, shr, bnot, zext), widths explicit"
+  why: "the route's one unprovable arrow is English to contract, and the multiplier's contract was the one entry the front end could not produce; without this the DSL route stops at the timing half of every arithmetic block"
+  fix: "parse.py knows the keyword; emit.py lowers the obligation to `model(Port, Want, T)` under `refmodel`, live at every instant of the window, the antecedent's conjuncts read back with their delays, every value-vocabulary rule gated under `refmodel` literally, `obligation_span(N)` and the opaque ports' `data()` in the preamble; arithmetic on opaque values stays refused elsewhere"
+  gate: [test_v2_dsl_obligation_matches_the_hand_contract, test_v2_dsl_obligation_refusals_are_by_name]
+  docs: [TRANSLATION 3.7, ROUTE_METHODOLOGY 10.7, grammar.ebnf, skill, TOOL.md]
+
+- id: mit-line-carries-the-compiler-not-the-route
+  date: 2026-09-09
+  status: fixed
+  found: "review: asked what the two release lines differ by, the answer was 'only the LICENSE file', so the specification language's skill and its worked controlled English were already public under MIT"
+  what: "the MIT bundle carries the language's COMPILER (src/sv2asp/aspfirst2/dsl/ and lib/dsl/grammar.ebnf) and, since the 2026-09-11 narrowing, the spec2rtl-dsl skill as well; what is held back is the specifications WRITTEN in the language (rvMissq.cnl, its generated core, fifo.spec)"
+  why: "the user's ruling -- 'do not make the dsl into mit licence', then 'put the compiler alone into the mit one', then 'dont make it lose the spec2rtl-dsl skill'; one script built both lines with no notion of withholding by line, so a licensing decision had no mechanism behind it"
+  fix: "MIT_WITHHOLD in scripts/build_dist.py, BUNDLE-relative paths, applied by the assembly and asserted independently by the safety gate. The grammar is deliberately not withheld: the parser is built from it at import. bootstrap(license) is one text for both lines again now that nothing it names is withheld, and is kept as a function so the next withhold touching a name it uses changes it rather than discovering it"
+  open: "the remaining withhold is NOT self-consistent with what ships: ten shipped files name rvMissq.cnl -- among them GETTING_STARTED section 4.2, whose title is that filename and whose compile command reads it, the entry's README and its ladder, whose dsl rung reports `<artifact missing>` so the worked entry stops being complete. The safety gate cannot see it: those are backticked names, not markdown links. Either the specifications ship too, or those passages are rewritten"
+  gate: [test_v2_mit_bundle_carries_the_compiler_but_not_the_route_it_teaches, test_v2_user_distribution_is_safe_to_ship]
+  docs: [MAINTAINER.md, CLAUDE.md licensing]
+

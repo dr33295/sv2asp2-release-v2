@@ -365,5 +365,19 @@ INT        ::= /\d+/
 # property     ::= "@property" KIND [ "enable iff" "(" expr ")" ] ( claim | "always" expr )
 # assume       ::= "@assume" KIND claim
 # scenario     ::= "@scenario" KIND claim
+# obligation   ::= "@obligation" KIND "span" INT expr "|=>" [ delay ] KIND "==" KIND
+#                  -- THE DELIVERED VALUE (TRANSLATION.md 3.7): the antecedent's conjuncts
+#                  with their `##` delays are read back over a window `span` instants long,
+#                  the port is an opaque output, and the right-hand KIND is a value-kind
+#                  define read at the instant the operation entered. Lowers to the runner's
+#                  `model(Port, Want, T)` with `obligation_span(N)`; every rule of the value
+#                  vocabulary is gated under `refmodel`, so no term ever grounds in the step
+# valueDefine  ::= "@define" KIND ":" "value" "(" INT ")" gloss { "is" term [ "when" expr ] }
+#                  -- a piecewise TERM over the opaque ports: the arms partition the control
+#                  settings, and a setting no arm covers is reported dark by the delivery leg
+# term         ::= INT | KIND | func "(" term { "," term } ")"   -- KIND an opaque port, a
+#                  parameter or another value define; func one of sext/3 slc/3 mul/3 add/3
+#                  sub/3 cat/4 shl/3 shr/3 bnot/2 -- the tool's @func vocabulary, widths
+#                  explicit -- and zext/3, the identity on a natural
 # claim        ::= { binder } expr ( "|->" | "|=>" ) [ delay ] expr
 # binder       ::= QUANT KIND VAR [ "where" expr ]   -- scoped by parens, a colon, or a block

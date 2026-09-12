@@ -929,6 +929,20 @@ INT        ::= /\d+/
 # property     ::= "@property" KIND [ "enable iff" "(" expr ")" ] ( claim | "always" expr )
 # assume       ::= "@assume" KIND claim
 # scenario     ::= "@scenario" KIND claim
+# obligation   ::= "@obligation" KIND "span" INT expr "|=>" [ delay ] KIND "==" KIND
+#                  -- THE DELIVERED VALUE (TRANSLATION.md 3.7): the antecedent's conjuncts
+#                  with their `##` delays are read back over a window `span` instants long,
+#                  the port is an opaque output, and the right-hand KIND is a value-kind
+#                  define read at the instant the operation entered. Lowers to the runner's
+#                  `model(Port, Want, T)` with `obligation_span(N)`; every rule of the value
+#                  vocabulary is gated under `refmodel`, so no term ever grounds in the step
+# valueDefine  ::= "@define" KIND ":" "value" "(" INT ")" gloss { "is" term [ "when" expr ] }
+#                  -- a piecewise TERM over the opaque ports: the arms partition the control
+#                  settings, and a setting no arm covers is reported dark by the delivery leg
+# term         ::= INT | KIND | func "(" term { "," term } ")"   -- KIND an opaque port, a
+#                  parameter or another value define; func one of sext/3 slc/3 mul/3 add/3
+#                  sub/3 cat/4 shl/3 shr/3 bnot/2 -- the tool's @func vocabulary, widths
+#                  explicit -- and zext/3, the identity on a natural
 # claim        ::= { binder } expr ( "|->" | "|=>" ) [ delay ] expr
 # binder       ::= QUANT KIND VAR [ "where" expr ]   -- scoped by parens, a colon, or a block
 ```
@@ -1192,6 +1206,46 @@ constraint: executions violating it are excluded from consideration rather than 
 as failures. Every assumption is an obligation on whoever integrates the block, and the
 generated report lists them, because an assumption nobody validates is a hole in the
 proof wearing a green tick.
+
+### 10.7 `@obligation` — the delivered value, owed rather than enumerated
+
+```
+@define formattedA : value(64)
+  meaning: operand A as the multiply reads it
+  is srcA_M1                              when fullOperand
+  is sext(slc(srcA_M1, 0, 32), 32, 64)    when !fullOperand && !unsgn_M1
+  is slc(srcA_M1, 0, 32)                  when !fullOperand && unsgn_M1
+
+@obligation resultIsTheProduct
+  span 3
+  operation.valid && ##1 commit.valid |=> ##1 resMul_M3 == delivered
+```
+
+A block that computes something — a multiplier, a divider — delivers a value whose
+correctness is arithmetic, and the route's rule is that arithmetic is never enumerated: the
+operands are opaque, and the value claim goes to Lean. The language states such a claim in
+two parts. A **value-kind define** is a piecewise TERM over the opaque ports: each arm is an
+expression in the tool's own function vocabulary (`sext`, `slc`, `mul`, `add`, `sub`,
+`cat`, `shl`, `shr`, `bnot`, and `zext`, the identity on a natural), with every width
+written out, guarded by a condition over the control bits; the arms must partition the
+control settings, and a setting no arm covers is reported by the certificate as a dark
+delivery rather than passed. An **obligation** names the port, the instant the value must
+appear, and the define it must equal, with the operands read at the instant the operation
+entered; `span` is the window it looks back over, and the delays must agree with it (a
+two-cycle latency is a span of three).
+
+What it compiles to is exactly the direct route's hand-written form: `model(Port, Want, T)`
+under `refmodel`, live at every instant of the window, with every rule of the value
+vocabulary gated under `refmodel` literally — so the terms exist in the bounded delivery leg
+and never ground in the induction step, where a 128-bit term over free operand tokens would
+hit the wall. The certificate then compares the design's delivered term with the
+specification's at every legal control corner: identical symbols are discharged by identity,
+a symbolic difference is OWED to Lean with both terms printed, a concrete difference is a
+violation with its witness. Arithmetic on an opaque value anywhere else in a specification
+stays refused, because outside an obligation it would be a truth the solver is asked to
+decide rather than a term it hands over. The worked example is the 64x64 multiplier, whose
+compiled contract gives its hand-written one's verdicts line for line, the printed term
+included (`tests/fixtures/dsl_mul64/mul64.spec`).
 
 ---
 

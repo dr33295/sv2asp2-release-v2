@@ -21,7 +21,8 @@ import dataclasses
 import pathlib
 import re
 
-KEYWORDS = ("@assume", "@index", "@state", "@define", "@behavior", "@property", "@scenario")
+KEYWORDS = ("@assume", "@index", "@state", "@define", "@behavior", "@property", "@scenario",
+            "@obligation")
 _QUANT = re.compile(r"\b(each|some)\s+(\w+)\s+([A-Z]\w*)")
 _VAR = re.compile(r"\b([A-Z]\w*)\b")
 _IFACE_USE = re.compile(r"\b([a-z]\w*)\.(\w+)\s*(\(\s*([A-Z]\w*)\s*\))?")

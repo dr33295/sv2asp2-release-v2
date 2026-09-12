@@ -85,6 +85,13 @@ class Emitter:
         # about reset has to be able to say `!reset_n`
         self.signals = {c["name"] for c in signature.get("clocks_and_resets") or []}
         self.defines = {}          # name -> its `holds when` expression, when it has one
+        # THE DELIVERED-VALUE VOCABULARY (TRANSLATION.md 3.7, built 2026-09-09): a value-kind
+        # define is a piecewise TERM over the opaque ports in the tool's own @func
+        # vocabulary, and an @obligation compares a port against one at a later instant.
+        # Every rule they lower to is gated under `refmodel` literally, so the terms live in
+        # the bounded delivery leg only and never ground in the induction step.
+        self.value_defines = {}    # name -> (width, [(term text, condition text or None)])
+        self.obligation_spans = [] # the spans of the obligations lowered, for obligation_span(N)
         self.windows = {}          # name -> ("pointer"|"value"|..., its declared domain)
         self.indexes = {}          # name -> its extent
         self._n = 0
@@ -127,6 +134,15 @@ class Emitter:
         for n in self.root.walk():
             if n.kind == "@define":
                 body = P.notation_of(n)
+                vm = re.match(r"@define\s+(\w+)\s*:\s*value\((\w+)\)", n.header)
+                if vm:
+                    arms = []
+                    for line in n.body:
+                        am = re.match(r"is\s+(.*?)(?:\s+when\s+(.*))?$", line.strip())
+                        if am:
+                            arms.append((am.group(1).strip(), (am.group(2) or "").strip() or None))
+                    self.value_defines[vm.group(1)] = (vm.group(2), arms)
+                    continue
                 m = re.search(r"holds when\s+(.*)", body, re.S)
                 ps = re.match(r"@define\s+\w+\s*\(([^)]*)\)", n.header)
                 self.defines[n.name] = (m.group(1).strip() if m else None,
@@ -994,6 +1010,17 @@ class Emitter:
             "% route's rule, with an incident behind it: an invariant was once added here",
             "% while the real cause was elsewhere, and it survived as cargo until a",
             "% measurement showed the set inductive at K=1 without it."]
+        if self.obligation_spans:
+            span = max(self.obligation_spans)
+            lines += ["",
+                "% THE DELIVERED-VALUE OBLIGATION (TRANSLATION.md 3.7): the operands are opaque,",
+                "% so every rule of the value vocabulary below is gated under `refmodel` -- live",
+                "% in the bounded delivery leg, absent from the induction step -- and the window",
+                "% the obligation looks back over is declared once, as the deepest span.",
+                f"obligation_span({span})."]
+            for q in self.ports.values():
+                if q.get("role") == "opaque":
+                    lines.append(f"data({q['name']}).")
         if self._any_input:
             lines += ["",
                 "% every scenario's INPUT slot: no constraint beyond the machine being out of",
@@ -1118,6 +1145,157 @@ class Emitter:
             return [], f"{node.name}: {e}"
         return rules, None
 
+    # ================================================================== the delivered value
+    # TRANSLATION.md 3.7, built 2026-09-09 for the 64x64 multiplier: a specification states the
+    # required FORM of a delivered value as a piecewise term over the opaque operands, and the
+    # certificate compares the design's term with it -- identity, OWED to Lean, or a violation.
+    # Data is never enumerated: the terms are @func calls the runner leaves symbolic.
+
+    _FUNCS = {"sext": 3, "slc": 3, "mul": 3, "add": 3, "sub": 3, "cat": 4, "shl": 3, "shr": 3,
+              "bnot": 2}
+
+    def _term(self, e: X.E, t: str, lits: list) -> str:
+        """A TERM of the value vocabulary, its operand-binding literals appended to `lits`."""
+        if e.op == "num":
+            return e.text
+        if e.op == "name":
+            n = e.text
+            if n in self.value_defines:
+                v = self._fresh("V", n)
+                lits.append(f"{n}({v}, {t})")
+                return v
+            if n in self.ports:
+                if self.ports[n].get("role") != "opaque":
+                    raise EmitError(f"`{n}` in a term -- only an opaque port carries a value "
+                                    f"a term can be built from; a control level belongs in "
+                                    f"the arm's `when`")
+                v = self._fresh("V", n)
+                lits.append(f"val({n}, {v}, {t})")
+                return v
+            if n in self.params:
+                return n
+            raise EmitError(f"`{n}` is not a value a term can be built from")
+        if e.op == "call":
+            f = e.text
+            if f == "zext":
+                # zero extension is the identity on a natural: the width is the reader's
+                if len(e.kids) != 3:
+                    raise EmitError("`zext(x, from, to)` takes three arguments")
+                return self._term(e.kids[0], t, lits)
+            if f not in self._FUNCS:
+                raise EmitError(f"`{f}(...)` is not in the term vocabulary "
+                                f"({', '.join(sorted(self._FUNCS))}, zext)")
+            if len(e.kids) != self._FUNCS[f]:
+                raise EmitError(f"`{f}` takes {self._FUNCS[f]} arguments, given {len(e.kids)}")
+            args = [self._term(k, t, lits) for k in e.kids]
+            return f"@{f}({', '.join(args)})"
+        raise EmitError(f"a term cannot contain {e.op} ({e.text!r})")
+
+    def _value_define_rules(self, name: str) -> list:
+        """One rule per arm: `name(TERM, T) :- refmodel, gtime(T), <the arm's condition>,
+        <the operands' bindings>.` The arms must partition the control space; the runner
+        reports an obligation dark at a corner no arm covers, and two arms alive at once
+        make the delivered value two-valued, which the delivery leg reports as well."""
+        width, arms = self.value_defines[name]
+        rules = []
+        for term_text, cond in arms:
+            lits = []
+            crules = []
+            if cond:
+                clits, crules = self.lower(X.parse_expr(cond), "T")
+                lits += clits
+            term = self._term(X.parse_expr(term_text), "T", lits)
+            rules += crules
+            rules.append(f"{name}({term}, T) :- refmodel, gtime(T), {', '.join(lits)}.")
+        return rules
+
+    def _at(self, offset: int) -> str:
+        return "T" if offset == 0 else (f"T+{offset}" if offset > 0 else f"T-{-offset}")
+
+    def obligation(self, node) -> tuple:
+        """`@obligation NAME` with a `span N` line and one claim `ANT |=> ##k PORT == VALUE`:
+        the antecedent's conjuncts, with their `##` delays, are read back from the delivery
+        instant T over the window, and the value vocabulary at the instant the operation
+        entered (the antecedent's first instant). Lowers to the runner's `model(PORT, W, T)`
+        under `refmodel`, live at every instant of the window."""
+        self._fresh_rule_scope(node.name)
+        body_lines = [l for l in node.body if not P.PROSE.match(l)]
+        span = None
+        claim_lines = []
+        for l in body_lines:
+            m = re.match(r"span\s*:?\s*(\d+)\s*$", l.strip())
+            if m:
+                span = int(m.group(1))
+            else:
+                claim_lines.append(l)
+        try:
+            if span is None:
+                raise EmitError("an obligation needs a `span N` line: the window it looks "
+                                "back over, in instants (3 for a two-cycle latency)")
+            ant, arrow, cons = X.split_claim("\n".join(claim_lines))
+            if arrow != "|=>" or not ant:
+                raise EmitError("an obligation is written `ANT |=> ##k PORT == VALUE`")
+            lo, hi, cons = X.strip_delay(cons)
+            if lo is not None and lo != hi:
+                raise EmitError("an obligation delivers at one instant, not over a range")
+            reach = 1 + (lo or 0)               # the consequent's distance from the entry
+            if reach != span - 1:
+                raise EmitError(f"the span ({span}) and the delays disagree: the value is "
+                                f"delivered {reach} instant(s) after the entry, so the span "
+                                f"must be {reach + 1}")
+            entry = -(span - 1)
+            lits = ["refmodel"] + [f"live({self._at(k)})" for k in range(entry, 1)]
+            rules = []
+            # the antecedent: each conjunct at the entry instant plus its own delay
+            def conjuncts(e):
+                return conjuncts(e.kids[0]) + conjuncts(e.kids[1]) if e.op == "and" else [e]
+            for c in conjuncts(X.parse_expr(ant)):
+                off = 0
+                while c.op == "delay":
+                    lo2, hi2 = c.text.split(":")
+                    if lo2 != hi2:
+                        raise EmitError("a ranged delay cannot appear in an obligation's "
+                                        "antecedent")
+                    off += int(lo2)
+                    c = c.kids[0]
+                if entry + off > 0:
+                    raise EmitError("an antecedent conjunct falls after the delivery instant")
+                cl, cr = self.lower(c, self._at(entry + off))
+                lits += cl
+                rules += cr
+            ce = X.parse_expr(cons)
+            if ce.op != "cmp" or ce.text != "==" or ce.kids[0].op != "name":
+                raise EmitError("an obligation's consequent is `PORT == VALUE`, the port an "
+                                "opaque output and the value a value-kind @define")
+            port, want = ce.kids[0].text, ce.kids[1]
+            if self.ports.get(port, {}).get("role") != "opaque":
+                raise EmitError(f"`{port}` -- the delivered value must be an opaque port")
+            if want.op != "name" or want.text not in self.value_defines:
+                raise EmitError("the required value must be a value-kind @define, so its "
+                                "arms say what it is at every control setting")
+            w = self._fresh("V", "want")
+            lits.append(f"{want.text}({w}, {self._at(entry)})")
+            rules.append(f"model({port}, {w}, T) :- {', '.join(lits)}.")
+            # the value vocabulary the obligation reaches, each define once
+            done = set()
+            todo = [want.text]
+            while todo:
+                n = todo.pop()
+                if n in done:
+                    continue
+                done.add(n)
+                for term_text, cond in self.value_defines[n][1]:
+                    for m in re.finditer(r"\b([a-z]\w*)\b", term_text):
+                        if m.group(1) in self.value_defines:
+                            todo.append(m.group(1))
+            for n in sorted(done, key=lambda k: list(self.value_defines).index(k)):
+                rules += self._value_define_rules(n)
+            self.obligation_spans.append(span)
+            self.spans[node.name] = span - 1
+        except (X.ExprError, EmitError) as e:
+            return [], f"{node.name}: {e}"
+        return rules, None
+
     def contract(self) -> tuple:
         """The whole claim half of the contract, plus whatever could not be lowered.
 
@@ -1136,6 +1314,12 @@ class Emitter:
                     walk(n, enclosing + binders)
                 elif n.kind in ("@property", "@assume"):
                     rules, err = self.claim(n, enclosing)
+                    if err:
+                        refused.append(err)
+                    else:
+                        out.extend(rules)
+                elif n.kind == "@obligation":
+                    rules, err = self.obligation(n)
                     if err:
                         refused.append(err)
                     else:

@@ -323,6 +323,11 @@ part entirely.
 
 ### 3.7 Delivered data — an obligation, not an enumeration
 
+**BUILT 2026-09-09** (`@obligation` and value-kind `@define`s, methodology 10.7; gate
+`test_v2_dsl_obligation_matches_the_hand_contract`, the multiplier's hand contract as the parity
+fixture, the same printed term). Until then this section was the plan alone and the multiplier's
+contract was written by hand.
+
 Where a property states the required *form* of a delivered value, the compiler emits
 `model(Port, Want, T)` with an `obligation_span(N)`, and the certificate compares the
 design's delivered term with the specification's: identical terms are discharged by

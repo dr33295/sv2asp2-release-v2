@@ -69,6 +69,19 @@ opinion.
 | the route's reasoning, and the language reference | `docs/spec2rtl2/ROUTE_METHODOLOGY.md` |
 | a complete worked entry | `examples/spec2rtl2/rv_missq/` (and `examples/spec2rtl2/fifo/`, smaller, with a hand-written contract) |
 
+## What this folder is, and how it is updated
+
+This folder is a published SNAPSHOT of the tool, not a working checkout of its sources: a
+new version replaces it wholesale, and you take one with `git pull`. Two consequences, each
+of which has cost somebody time:
+
+* **Nothing in this folder is yours to edit — including this file.** `CLAUDE.md` and
+  `AGENTS.md` are GENERATED when the bundle is published, so a local edit is silently lost
+  at the next update. More seriously, a modified tool makes every certificate it produces
+  meaningless; if the tool is wrong, report it (below) rather than patching it.
+* **Your work never lives here.** Everything a block produces belongs in the working folder
+  beside this one, which is yours and which an update never touches.
+
 ## Support
 
 This tool is maintained centrally. If it refuses something it should accept, or accepts
